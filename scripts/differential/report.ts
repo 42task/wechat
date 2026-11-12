@@ -77,16 +77,67 @@ function onlineAcceptance(): ObjectRow {
   const mapping = read('environment-mapping.json');
   const current = read('post-4bcd-deployment.json'), currentBuild = read('candidate-4bcd.json');
   const legacyMain = read('legacy-main-audit.json');
+  const b0 = read('b0-cutover-4bcd.json'), b1 = read('b1-deployment-4bcd.json');
+  const readonly = read('cutover-readonly.json');
+  const legacyComparison = read('logic-phase-state.json').additionalValidatedCoverage?.legacyComparison;
+  const identifier = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{7,64}$/.test(value) ? value : null;
+  const digest = (value: unknown) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value) ? value : null;
+  const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const boolean = (value: unknown) => typeof value === 'boolean' ? value : null;
+  const state = (value: unknown) => typeof value === 'string' && ['healthy', 'success', 'skipped', 'failure', 'pending'].includes(value) ? value : null;
+  const timestamp = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?$/.test(value) ? value : null;
+  const runId = (value: unknown) => typeof value === 'string' && /^codex_[a-zA-Z0-9_-]{1,100}$/.test(value) ? value : null;
+  const ciUrl = (value: unknown) => typeof value === 'string' && /^https:\/\/github\.com\/42task\/wechat\/actions\/runs\/\d+$/.test(value) ? value : null;
+  const counts = (value: ObjectRow | undefined) => ({ total: count(value?.total), passed: count(value?.passed), failed: count(value?.failed) });
+  const publicHosts = new Set(['x.b0.01xr.com', 'x2.b1.01xr.com']);
+  const readonlyPaths = new Set(['/HyffLvU10s.txt', '/YnLzIY5Yjs.txt', '/robots.txt', '/favicon.ico', '/css/site.css', '/health', '/.env', '/index.php', '/manifest.json', '/v2/files/list', '/v2/files']);
   const paymentChecks = ['miniAppConfigured', 'merchantConfigured', 'apiV3KeyLengthValid', 'signingKeyReadable', 'signingRoundTrip', 'platformKeysReadable', 'merchantCertificatePresent', 'merchantCertificateMatchesPrivate', 'merchantCertificateCurrent', 'merchantSerialMatchesCertificate', 'appInitialization', 'available'];
   return {
-    evidenceScope: '当前候选仅部署 b0 未使用的 Node，业务入口尚未切换。较早 d829 的有限业务验收另列，不能继承到新候选。',
-    currentCandidate: { commit: current.commit ?? null, digest: current.digest ?? null, createdAtShanghai: current.createdAtShanghai ?? null, health: current.health ?? null, ci: currentBuild.ciRun ?? null, ciVerify: currentBuild.verify ?? null, ciPublish: currentBuild.publish ?? null, ciTests: currentBuild.ciMySqlTests ?? null, traefikLabelsUnchanged: current.traefikLabelsUnchanged === true, keyVolumeReadonly: current.keyVolumeReadonly === true, databaseMigrations: current.databaseMigrations ?? null, businessEntryCutover: current.businessEntryCutover ?? null, staticFilesVerified: Array.isArray(current.staticFiles) ? current.staticFiles.filter((file: ObjectRow) => file.matchesFrozenSource === true).length : null },
-    earlierD829Candidate: { commit: deployed.commit ?? null, digest: deployed.digest ?? null, ciVerify: deployed.verify ?? null, ciPublish: deployed.publish ?? null, tests: deployed.localMySqlTests ?? null, createdAtShanghai: deployed.createdAtShanghai ?? null },
-    legacyMain: { host: legacyMain.mainHost ?? null, deployedRevision: legacyMain.deployedRevision ?? null, sameContract: legacyMain.sameContract ?? null, transparentCutoverReady: legacyMain.transparentCutoverReady ?? null, scope: '旧协议支付缺少 file_id、JWT 身份域及 schema 等存在跨版本差异；不能套用新版 b0 的替换结论。' },
-    deploymentScope: { nodeContainerOnly: deployment.deployment?.target === 'wechat2 business container only', stackRedeploy: deployment.deployment?.stackRedeploy ?? null, databaseMigrations: deployment.deployment?.databaseMigrations ?? null, yiiChanges: deployment.deployment?.yiiChanges ?? null, b1NodeChanged: deployment.deployment?.b1NodeChanged ?? null },
-    parity: { runId: parity.runId ?? null, applicationCommit: parity.applicationCommit ?? null, completed: parity.completed === true, passed: parity.passed ?? null, total: parity.total ?? null, restored: parity.restored === true, sqlRowsRemoved: parity.cleanup?.sqlRowsRemoved ?? null, redisHashesRemoved: parity.cleanup?.redisHashesRemoved ?? null, sqlVerified: parity.cleanup?.sqlVerified === true, redisVerified: parity.cleanup?.redisVerified === true },
-    providerProbe: { runId: provider.runId ?? null, mode: provider.mode ?? null, completed: provider.completed === true, passed: provider.passed ?? null, total: provider.total ?? null, cosWritesStarted: provider.cosWritesStarted ?? null, paymentConfiguration: Object.fromEntries(paymentChecks.map(key => [key, typeof provider.paymentConfiguration?.[key] === 'boolean' ? provider.paymentConfiguration[key] : null])), scope: '实际短效 STS 签发和缺失对象 HEAD；不含支付、退款、对象写入或硬件。' },
-    environmentMapping: { businessMappingsCompared: mapping.coreMappingsCompared ?? null, businessValuesEqual: mapping.coreValuesEqual === true, keyFilesCompared: mapping.keyFileContentChecks ?? null, keyFileContentsEqual: mapping.keyFileContentMatches === mapping.keyFileContentChecks && mapping.keyFileContentChecks === 6, keyFilesReadableOnBothSides: mapping.keyFilesReadableOnBothSides === true, nodeDeviceDevAuth: mapping.nodeDeviceDevAuth ?? null, yiiEnvironment: mapping.yiiEnvConstant ?? null, valuesOrKeyFingerprintsExported: mapping.environmentValuesExported === true || mapping.keyFingerprintsExported === true, changedDeployedEnvironment: mapping.changedDeployedEnvironment === true },
+    evidenceScope: 'b0 仅 x.b0.01xr.com 已切到 Node 4bcd38b，原 Yii 保留回滚；b1 仅更新 x2.b1.01xr.com 候选，x.b1.01xr.com 仍为 Yii。旧主域名和其他域名保持原状。较早 d829 的有限业务验收单独列示。',
+    currentCandidate: { commit: identifier(current.commit), digest: digest(current.digest), ci: ciUrl(currentBuild.ciRun), ciVerify: state(currentBuild.verify), ciPublish: state(currentBuild.publish), ciTests: count(currentBuild.ciMySqlTests) },
+    verificationCi: { commit: '1bf66a3fe4c89e0e89443984568733b2a868a8a6', run: 'https://github.com/42task/wechat/actions/runs/43244233055', verify: 'success', publish: 'skipped', applicationSourceChanged: false },
+    currentDeployment: {
+      b0: {
+        commit: identifier(b0.commit), digest: digest(b0.digest), createdAtShanghai: timestamp(b0.createdAtShanghai), nodeContainer: identifier(b0.nodeContainer), health: state(b0.health),
+        businessHost: b0.rule === 'Host(`x.b0.01xr.com`)' ? 'x.b0.01xr.com' : null,
+        businessEntryCutover: boolean(b0.businessEntryCutover), routePriority: count(b0.priority), originalLabelsPreserved: count(b0.originalLabelsPreserved), addedRouteLabels: count(b0.addedRouteLabels),
+        deviceSignatureExemptionEnabled: b0.deviceMode === '1', deviceModeExplicitlyApproved: boolean(b0.deviceModeExplicitlyApproved),
+        originalYiiContainer: identifier(b0.originalYiiContainer), originalYiiHealthy: boolean(b0.originalYiiHealthy),
+        databaseMigrations: boolean(b0.databaseMigrations), businessFixtureWrites: boolean(b0.businessFixtureWrites), stackRedeploy: boolean(b0.stackRedeploy), auxiliaryJobsRestarted: boolean(b0.auxiliaryJobsRestarted), otherHostRulesChanged: boolean(b0.otherHostRulesChanged),
+      },
+      b1: {
+        commit: identifier(b1.commit), digest: digest(b1.digest), createdAtShanghai: timestamp(b1.createdAtShanghai), nodeContainer: identifier(b1.nodeContainer), health: state(b1.health),
+        candidateHost: b1.healthUrl === 'https://x2.b1.01xr.com/health' ? 'x2.b1.01xr.com' : null,
+        businessHost: b1.businessEntry === 'https://x.b1.01xr.com' ? 'x.b1.01xr.com' : null,
+        businessEntryCutover: boolean(b1.businessEntryCutover), originalYiiCommit: identifier(b1.originalYiiCommit), originalYiiContainer: identifier(b1.originalYiiContainer), originalYiiHealthy: boolean(b1.originalYiiHealthy),
+        strictDeviceSignaturePolicyRetained: b1.deviceMode === '0', routingLabelsUnchanged: boolean(b1.routingLabelsUnchanged),
+        businessMappingsCompared: count(b1.businessMappingsCompared), businessMappingsEqual: count(b1.businessMappingsEqual), scanLoginOriginAlignedToOwnYii: boolean(b1.scanOriginCopiedFromOwnYii),
+        keyFilesCompared: count(b1.keyFilesCompared), keyFilesContentEqual: count(b1.keyFilesContentEqual), keyFilesReadableOnBothSides: boolean(b1.keyFilesReadableOnBothSides), keyVolumeReadonly: boolean(b1.keyVolumeReadonly),
+        databaseMigrations: boolean(b1.databaseMigrations), businessFixtureWrites: boolean(b1.businessFixtureWrites), stackRedeploy: boolean(b1.stackRedeploy), auxiliaryJobsRestarted: boolean(b1.auxiliaryJobsRestarted),
+      },
+      approvalReview: { initialMultiHostDraftRejected: true, narrowedToSingleB0HostBeforeApply: true },
+    },
+    readonlyVerification: {
+      finishedAt: timestamp(readonly.finishedAt), expectedGitCommit: identifier(readonly.expectedGitCommit), counts: counts(readonly.counts),
+      hosts: (Array.isArray(readonly.hosts) ? readonly.hosts : []).filter((host: ObjectRow) => publicHosts.has(host.host)).map((host: ObjectRow) => ({
+        host: host.host, counts: counts(host.counts),
+        checks: (Array.isArray(host.checks) ? host.checks : []).filter((check: ObjectRow) => readonlyPaths.has(check.path) && ['GET', 'OPTIONS'].includes(check.method)).map((check: ObjectRow) => ({
+          method: check.method, path: check.path, expectedStatus: count(check.expectedStatus), actualStatus: count(check.actualStatus), passed: boolean(check.passed),
+        })),
+      })),
+    },
+    configurationOutputIncident: {
+      environmentValuesAccidentallyPrintedToToolOutput: boolean(b0.uiSnapshotIncident?.environmentValuesAccidentallyPrintedToToolOutput),
+      secretValuesWrittenToRepositoryOrReport: boolean(b0.uiSnapshotIncident?.secretValuesWrittenToRepositoryOrReport),
+      subsequentChecksOutputOnlyNamesAndBooleans: boolean(b0.uiSnapshotIncident?.subsequentChecksOutputOnlyNamesAndBooleans),
+      sensitiveValuesIncludedInThisProjection: false,
+    },
+    earlierD829Candidate: { commit: identifier(deployed.commit), digest: digest(deployed.digest), ciVerify: state(deployed.verify), ciPublish: state(deployed.publish), tests: count(deployed.localMySqlTests), createdAtShanghai: timestamp(deployed.createdAtShanghai) },
+    legacyMain: { host: legacyMain.mainHost === 'x.4mr.cn' ? 'x.4mr.cn' : null, deployedRevision: identifier(legacyMain.deployedRevision), sameContract: boolean(legacyMain.sameContract), transparentCutoverReady: boolean(legacyMain.transparentCutoverReady), compared: count(legacyComparison?.compared), compatible: count(legacyComparison?.compatible), incompatible: count(legacyComparison?.incompatible), scope: '旧版仅 2/12 一致；支付缺少 file_id、JWT 身份域及 schema 等存在跨版本差异，不能称为透明替换。' },
+    earlierD829DeploymentScope: { nodeContainerOnly: deployment.deployment?.target === 'wechat2 business container only', stackRedeploy: boolean(deployment.deployment?.stackRedeploy), databaseMigrations: boolean(deployment.deployment?.databaseMigrations), yiiChanges: boolean(deployment.deployment?.yiiChanges), b1NodeChanged: boolean(deployment.deployment?.b1NodeChanged) },
+    earlierD829Parity: { runId: runId(parity.runId), applicationCommit: identifier(parity.applicationCommit), completed: boolean(parity.completed), passed: count(parity.passed), total: count(parity.total), restored: boolean(parity.restored), sqlRowsRemoved: count(parity.cleanup?.sqlRowsRemoved), redisHashesRemoved: count(parity.cleanup?.redisHashesRemoved), sqlVerified: boolean(parity.cleanup?.sqlVerified), redisVerified: boolean(parity.cleanup?.redisVerified) },
+    earlierD829ProviderProbe: { runId: runId(provider.runId), completed: boolean(provider.completed), passed: count(provider.passed), total: count(provider.total), cosWritesStarted: boolean(provider.cosWritesStarted), paymentConfiguration: Object.fromEntries(paymentChecks.map(key => [key, boolean(provider.paymentConfiguration?.[key])])), scope: '实际短效 STS 签发和缺失对象 HEAD；不含支付、退款、对象写入或硬件。' },
+    earlierD829EnvironmentMapping: { businessMappingsCompared: count(mapping.coreMappingsCompared), businessValuesEqual: boolean(mapping.coreValuesEqual), keyFilesCompared: count(mapping.keyFileContentChecks), keyFileContentsEqual: mapping.keyFileContentMatches === mapping.keyFileContentChecks && mapping.keyFileContentChecks === 6, keyFilesReadableOnBothSides: boolean(mapping.keyFilesReadableOnBothSides) },
   };
 }
 
@@ -195,10 +246,10 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
   return {
     generatedAt: new Date().toISOString(), conclusion: unexplained.length || errors.length || !node.success
       ? `当前本地复核仍有 ${unexplained.length} 组未解释差异、${errors.length} 项缺失证据或测试未通过，逻辑等价复核尚未完成；尚不能确认本轮代码可替换。`
-      : `本轮对新版 b0 Yii 的本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列边界。候选已仅部署 b0 未使用的 Node，业务入口未切；旧主域名是另一代协议，切换范围与设备认证策略仍需处理。真实微信、支付、COS 和硬件联调按用户决定延期。`, database: 'MySQL 8.4.9',
-    phase: '先完成代码与逻辑对应，再按授权切换；真实外部联调延期，不作为本阶段新增门槛。',
-    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用独立 MySQL/Redis 容器与数据库；其执行不访问线上。较早线上 d829 候选部署及有限验收另列，不与本轮未提交代码混合。' },
-    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；本轮在 codex/online-acceptance-20261112 修复。wechat HEAD 是生成报告时的提交，未提交修改另列于 Git 状态；部署版本以当前候选的实际 SHA 为准。Yii、b1 和旧主入口未变，业务入口尚未切换。' },
+      : `本轮对新版 b0 Yii 的本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列边界。b0 仅 x.b0.01xr.com 已按授权切到 Node 4bcd38b；b1 仅更新候选入口，业务仍为 Yii。两处只读检查 22/22 通过。旧主域名仅 2/12 一致，不能透明替换；真实微信、支付、COS 和硬件联调按用户决定延期。`, database: 'MySQL 8.4.9',
+    phase: '逻辑检查完成后，已执行获准的 b0 单 Host 切换与 b1 候选更新；真实外部联调继续延期。',
+    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用独立 MySQL/Redis 容器与数据库；其执行不访问线上。当前部署只读检查及较早 d829 业务验收分别列示，不合并为本地测试或新候选业务联调。' },
+    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；现代逻辑检查后补充了旧主线独立对照。wechat HEAD 是生成报告时的提交，部署应用仍为 4bcd38b。b0 只切单一获准 Host，b1 只更新候选；原 Yii、b1 业务入口、旧主域名及其他域名保留。' },
     baseline: baseline?.comparison ?? { total: 797, matched: 676, differences: 121, note: '初始比较归档在 baseline-20261112；修复期间新增边界用例，两轮分母不同。' },
     remote: remote ?? { unavailable: true },
     candidate: candidate ?? { unavailable: true },
@@ -227,11 +278,12 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
       'Y1 场景使用本地 HTTPS 替身；并非真实 Y1 部署或网络验收。场景套件结果始终取最后一次已生成 JSON，不沿用早期证书信任配置错误。',
       '按用户要求，以现有 Yii 为兼容合同，不新增业务规则。旧入口的公开错误和保存副作用亦参与对照；诊断内容中的凭据保持脱敏，涉及扩大云存储权限的差异须单独评估。',
       '生成时钟、随机凭据、等义 Link token 引号及私有 PHP 文件路径/堆栈只按脚本中显式规则归一化；错误状态、公开消息与类型、业务余额、SQL/Redis 副作用和字段缺失继续作为证据。',
-      'b0 未使用的 Node 容器已单独部署较早 d829 候选，其专属 fixture 在线24/24，10条SQL行与6个Redis hash清理并复核；没有迁移、整栈重部署或切换业务入口。本轮新增逻辑修复尚未部署，不能继承该候选的线上验收结果。',
-      '已核对22项业务环境映射及6个密钥文件内容一致，未导出环境值、密钥或指纹。线上 Yii ENV=dev，而Node GAME_DEV_AUTH=0；切换前须明确对齐设备time/hash兼容配置。MySQL连接charset也须按源utf8配置。',
+      'b0 仅 x.b0.01xr.com 已切到 4bcd38b，设备免签策略经用户明确批准，原 Yii 保留回滚；最初多 Host 草案被自动审批拒绝，在应用前已收窄。b1 候选 x2.b1.01xr.com 使用相同镜像，业务 x.b1.01xr.com 仍是 Yii 64901c9，设备严格校验策略保持。两处各 11/11、合计 22/22 只读检查通过。未迁移、未整栈重部署、未重启辅助任务或进行业务写入，其他域名未变。',
+      'b1 按自己的 Yii 核对 24/24 项业务环境映射、6/6 密钥文件字节和可读性，并修正本环境扫码 origin，没有照搬 b0。UI 快照曾意外把 ENV 值显示到工具输出，已告知用户；后续只输出名称、数量和布尔结论，实际值及密钥指纹没有写入仓库或报告。本投影不嵌入 ENV 值或密钥指纹。',
+      '较早 d829 专属 fixture 24/24，10 条 SQL 行与 6 个 Redis hash 已清理并复核；这些是历史业务证据，不能继承为新候选真实业务联调。旧主域名 c4e088a 的独立对照仅 2/12 一致，不属于本轮现代 883/884 分母，不能宣称透明替换。',
       '保留的实现边界包括诊断Bearer脱敏、Y1旧forward关闭TLS校验而Node继续验证、部分设备建档等错误分支的更强事务回滚，以及扫码限流Yii FileCache与Node SQL存储不共享。它们不被改写成严格零差异。',
       '业务ID/scene_id按现有INT32数据库域验证。PHP64整数超出JavaScript安全整数范围时，原始数值及JSON输出精度仍有边界；不能据本报告声称任意PHP64输入逐字节等价。',
-      '诊断脱敏的已知差异保持在主表中，因此严格差分命令仍可为exit 1；用户已授权逻辑对应后切换，真实外部联调延期。候选发布、当前部署配置及入口/回滚核对是另一步骤，本报告本身不执行切换。',
+      '诊断脱敏的已知差异保持在主表中，因此严格差分命令仍可为 exit 1；部署应用仍为 4bcd38b。补充验证提交 1bf66a3 的 CI 43244233055 verify 成功、publish 按条件跳过。本报告只离线汇总证据，不执行切换或外部联调。',
     ], findings, readErrors: errors,
     reproduction: [
       "cd '/Users/dirui/Documents/ChatGPT/打卡机/wechat'",
@@ -390,7 +442,7 @@ function html(summary: ObjectRow, cases: ComparisonCase[]): string {
 <section class="section"><h2>已复现差异与优先级</h2><div id="findings" class="findings"></div></section>
 <section class="section"><h2>本轮执行结果</h2><div class="table-wrap"><table><thead><tr><th>证据套件</th><th>用例组</th><th>一致</th><th>不同</th><th>测试工具错误</th><th>最后生成时间（上海）</th></tr></thead><tbody id="suite-rows"></tbody></table></div><p id="yii-note" class="muted"></p><p id="interop-note" class="muted"></p></section>
 <section class="section"><h2>逐项对照证据</h2><p class="muted">默认只显示不同项。展开可查看 Yii 与 Node 的响应、SQL / Redis 状态；凭据和字面令牌已脱敏。搜索支持用例名、路径及差异字段。</p><div class="toolbar"><label>搜索用例或差异字段<input id="search" type="search" placeholder="例如 points、cache-control、updated_at" autocomplete="off"></label><label>对照结果<select id="status"><option value="different" selected>只看不同</option><option value="all">全部用例</option><option value="matched">只看一致</option></select></label><label>证据套件<select id="suite"><option value="">全部套件</option></select></label></div><div class="pager"><span id="filter-count" class="muted" aria-live="polite"></span><button id="previous" type="button">上一页</button><button id="next" type="button">下一页</button></div><div id="cases"></div></section>
-<section class="section"><h2>当前本地代码与较早线上候选</h2><pre id="candidate"></pre><pre id="remote"></pre><p id="dependency-audit" class="muted"></p></section>
+<section class="section"><h2>当前本地代码、部署状态与历史候选</h2><pre id="candidate"></pre><pre id="remote"></pre><p id="dependency-audit" class="muted"></p></section>
 <section class="section"><h2>比较基线与复现</h2><pre id="source-heads"></pre><pre id="environment"></pre><pre id="commands"></pre><p id="reproduction-note" class="muted"></p></section>
 <footer>这是可离线打开的单文件报告，不加载外部脚本、字体或服务。原始证据以生成时快照嵌入；重新执行报告生成器即可读取最新 JSON。</footer>
 </main><script id="report-data" type="application/json">${payload}</script><script>${clientScript}</script></body></html>`;

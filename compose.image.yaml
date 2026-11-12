@@ -1,0 +1,51 @@
+# Image-only deployment. Supply the reviewed environment's existing configuration
+# through both --env-file (Compose interpolation) and WECHAT_ENV_FILE (container).
+services:
+  wechat2:
+    image: ${WECHAT_IMAGE:?set the verified pinned image}
+    restart: unless-stopped
+    env_file:
+      - ${WECHAT_ENV_FILE:?set the environment file}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?preserve the existing public origin}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-${MYSQL_DB:?set the existing database}}
+      MYSQL_USER: ${MYSQL_USER:-${MYSQL_NAME:?set the existing user}}
+      MYSQL_CHARSET: ${MYSQL_CHARSET:-utf8}
+      GAME_DEV_AUTH: ${GAME_DEV_AUTH:-0}
+      TRUST_PROXY: ${TRUST_PROXY-1}
+      JWT_KEY: /run/game-keys/${JWT_KEY_FILE:?set the existing business key filename}
+      ADMIN_JWT_KEY: /run/game-keys/${ADMIN_JWT_KEY_FILE:?set the existing admin private key filename}
+      ADMIN_JWT_PUB_KEY: /run/game-keys/${ADMIN_JWT_PUB_KEY_FILE:?set the existing admin public key filename}
+    volumes:
+      - type: volume
+        source: game_keys
+        target: /run/game-keys
+        read_only: true
+        volume:
+          nocopy: true
+    networks:
+      - backend
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${BACKEND_NETWORK:?set the existing Docker network}
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.rule=${WECHAT_ROUTE_RULE:?set the complete reviewed Host rule}
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.priority=${WECHAT_ROUTE_PRIORITY:?set the reviewed priority above the Yii rollback router}
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.entrypoints=${TRAEFIK_ENTRYPOINT:?keep the existing HTTPS entrypoint}
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.middlewares=${TRAEFIK_MIDDLEWARES:?preserve the existing middleware list}
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.tls=true
+      - traefik.http.routers.${WECHAT_ROUTE_ID:?set a unique router id}.service=${WECHAT_ROUTE_ID:?set a unique service id}
+      - traefik.http.services.${WECHAT_ROUTE_ID:?set a unique service id}.loadbalancer.server.port=8080
+      - com.centurylinklabs.watchtower.enable=false
+
+networks:
+  backend:
+    external: true
+    name: ${BACKEND_NETWORK:?set the existing Docker network}
+
+volumes:
+  game_keys:
+    external: true
+    name: ${GAME_KEYS_VOLUME:?set the existing named key volume}
