@@ -75,10 +75,14 @@ function onlineAcceptance(): ObjectRow {
   const deployed = read('candidate-d829.json'), deployment = read('deployment.json');
   const parity = read('round-d829-a1.json'), provider = read('provider-probe-a1.json');
   const mapping = read('environment-mapping.json');
+  const current = read('post-4bcd-deployment.json'), currentBuild = read('candidate-4bcd.json');
+  const legacyMain = read('legacy-main-audit.json');
   const paymentChecks = ['miniAppConfigured', 'merchantConfigured', 'apiV3KeyLengthValid', 'signingKeyReadable', 'signingRoundTrip', 'platformKeysReadable', 'merchantCertificatePresent', 'merchantCertificateMatchesPrivate', 'merchantCertificateCurrent', 'merchantSerialMatchesCertificate', 'appInitialization', 'available'];
   return {
-    evidenceScope: '较早 d829 候选的有限线上验收，不能代替当前未提交代码的部署与复核。',
-    deployedCandidate: { commit: deployed.commit ?? null, digest: deployed.digest ?? null, ciVerify: deployed.verify ?? null, ciPublish: deployed.publish ?? null, tests: deployed.localMySqlTests ?? null, createdAtShanghai: deployment.currentCandidate?.createdAtShanghai ?? null },
+    evidenceScope: '当前候选仅部署 b0 未使用的 Node，业务入口尚未切换。较早 d829 的有限业务验收另列，不能继承到新候选。',
+    currentCandidate: { commit: current.commit ?? null, digest: current.digest ?? null, createdAtShanghai: current.createdAtShanghai ?? null, health: current.health ?? null, ci: currentBuild.ciRun ?? null, ciVerify: currentBuild.verify ?? null, ciPublish: currentBuild.publish ?? null, ciTests: currentBuild.ciMySqlTests ?? null, traefikLabelsUnchanged: current.traefikLabelsUnchanged === true, keyVolumeReadonly: current.keyVolumeReadonly === true, databaseMigrations: current.databaseMigrations ?? null, businessEntryCutover: current.businessEntryCutover ?? null, staticFilesVerified: Array.isArray(current.staticFiles) ? current.staticFiles.filter((file: ObjectRow) => file.matchesFrozenSource === true).length : null },
+    earlierD829Candidate: { commit: deployed.commit ?? null, digest: deployed.digest ?? null, ciVerify: deployed.verify ?? null, ciPublish: deployed.publish ?? null, tests: deployed.localMySqlTests ?? null, createdAtShanghai: deployed.createdAtShanghai ?? null },
+    legacyMain: { host: legacyMain.mainHost ?? null, deployedRevision: legacyMain.deployedRevision ?? null, sameContract: legacyMain.sameContract ?? null, transparentCutoverReady: legacyMain.transparentCutoverReady ?? null, scope: '旧协议支付缺少 file_id、JWT 身份域及 schema 等存在跨版本差异；不能套用新版 b0 的替换结论。' },
     deploymentScope: { nodeContainerOnly: deployment.deployment?.target === 'wechat2 business container only', stackRedeploy: deployment.deployment?.stackRedeploy ?? null, databaseMigrations: deployment.deployment?.databaseMigrations ?? null, yiiChanges: deployment.deployment?.yiiChanges ?? null, b1NodeChanged: deployment.deployment?.b1NodeChanged ?? null },
     parity: { runId: parity.runId ?? null, applicationCommit: parity.applicationCommit ?? null, completed: parity.completed === true, passed: parity.passed ?? null, total: parity.total ?? null, restored: parity.restored === true, sqlRowsRemoved: parity.cleanup?.sqlRowsRemoved ?? null, redisHashesRemoved: parity.cleanup?.redisHashesRemoved ?? null, sqlVerified: parity.cleanup?.sqlVerified === true, redisVerified: parity.cleanup?.redisVerified === true },
     providerProbe: { runId: provider.runId ?? null, mode: provider.mode ?? null, completed: provider.completed === true, passed: provider.passed ?? null, total: provider.total ?? null, cosWritesStarted: provider.cosWritesStarted ?? null, paymentConfiguration: Object.fromEntries(paymentChecks.map(key => [key, typeof provider.paymentConfiguration?.[key] === 'boolean' ? provider.paymentConfiguration[key] : null])), scope: '实际短效 STS 签发和缺失对象 HEAD；不含支付、退款、对象写入或硬件。' },
@@ -191,10 +195,10 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
   return {
     generatedAt: new Date().toISOString(), conclusion: unexplained.length || errors.length || !node.success
       ? `当前本地复核仍有 ${unexplained.length} 组未解释差异、${errors.length} 项缺失证据或测试未通过，逻辑等价复核尚未完成；尚不能确认本轮代码可替换。`
-      : `本轮本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列明确边界。当前代码尚未部署；按用户决定，真实微信、支付、COS 和硬件联调延期，完成候选发布、设备认证配置对齐及入口/回滚核对后再执行已授权切换。`, database: 'MySQL 8.4.9',
+      : `本轮对新版 b0 Yii 的本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列边界。候选已仅部署 b0 未使用的 Node，业务入口未切；旧主域名是另一代协议，切换范围与设备认证策略仍需处理。真实微信、支付、COS 和硬件联调按用户决定延期。`, database: 'MySQL 8.4.9',
     phase: '先完成代码与逻辑对应，再按授权切换；真实外部联调延期，不作为本阶段新增门槛。',
     environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用独立 MySQL/Redis 容器与数据库；其执行不访问线上。较早线上 d829 候选部署及有限验收另列，不与本轮未提交代码混合。' },
-    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；本轮在 codex/online-acceptance-20261112 修复。wechat HEAD 是生成报告时的提交，未提交修改另列于 Git 状态；发布须锁定实际构建 SHA。线上 b0 仍运行较早 d829 候选，Yii 与 b1 Node 未变，业务入口尚未切换。' },
+    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；本轮在 codex/online-acceptance-20261112 修复。wechat HEAD 是生成报告时的提交，未提交修改另列于 Git 状态；部署版本以当前候选的实际 SHA 为准。Yii、b1 和旧主入口未变，业务入口尚未切换。' },
     baseline: baseline?.comparison ?? { total: 797, matched: 676, differences: 121, note: '初始比较归档在 baseline-20261112；修复期间新增边界用例，两轮分母不同。' },
     remote: remote ?? { unavailable: true },
     candidate: candidate ?? { unavailable: true },
