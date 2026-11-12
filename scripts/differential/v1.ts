@@ -161,6 +161,16 @@ await h.record('v1-shop-gifts-eager-award-nested-fields',async t=>{
     direct:response(await h.request(t,'GET','/v1/gift/6?expand=award&fields=id,award.id',undefined,authorization())),
   };
 });
+await h.record('v1-shop-operation-lazy-defaults',async t=>{
+  await h.reset(t);await game(t,false);
+  await h.sql(t,'DELETE FROM operation WHERE shop_id=1');
+  const stored=()=>h.sql(t,'SELECT id,shop_id,pool,income,turnover FROM operation WHERE shop_id=1 ORDER BY id');
+  const before=await stored();
+  const first=response(await h.request(t,'GET','/v1/shop/1?expand=operation',undefined,authorization()));
+  const afterFirst=await stored();
+  const second=response(await h.request(t,'GET','/v1/shop/1?expand=operation',undefined,authorization()));
+  return {before,first,afterFirst,second,afterSecond:await stored()};
+});
 await h.record('v1-award-update-existing-duplicate-default-pairs',async t=>{
   await h.reset(t);await game(t,false);
   const first=await h.request(t,'POST','/v1/award',{shop_id:1},authorization());
