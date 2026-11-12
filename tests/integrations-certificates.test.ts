@@ -69,9 +69,9 @@ describe('Yii platform certificate environment compatibility', () => {
     await expect(integration.payment('GET', '/v3/certificates')).resolves.toEqual({ sequence: 2 });
   });
 
-  it('verifies an empty signed 204 response using a rotating certificate', async () => {
+  it('verifies an empty signed 204 response using a rotating certificate before the source body error', async () => {
     legacyPrimary(); vi.stubEnv('WECHAT_PLATFORM_CERTS', JSON.stringify([secondPath]));
-    await expect(api(async () => reply(undefined, second, 204)).payment('POST', '/v3/test')).resolves.toEqual({});
+    await expect(api(async () => reply(undefined, second, 204)).payment('POST', '/v3/test')).rejects.toThrow('Response body is empty.');
   });
 
   it('accepts signed encrypted notifications from either configured certificate', async () => {

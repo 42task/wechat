@@ -1,6 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, test, beforeEach, vi } from 'vitest';
 import type { Context, Row, Services } from '../src/core/contracts';
 import { parsePhpJson, phpNumberType, setPhpNumberType } from '../src/core/php';
@@ -15,8 +18,8 @@ class TestDatabase {
       CREATE TABLE shop (id INTEGER PRIMARY KEY, price INTEGER DEFAULT 10, rate INTEGER DEFAULT 80, play_time INTEGER DEFAULT 60, advanced INTEGER DEFAULT 0, tag TEXT, info JSON, created_at TEXT, updated_at TEXT);
       CREATE TABLE device (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE, tag TEXT UNIQUE, shop_id INTEGER, version INTEGER NOT NULL DEFAULT 0, ip TEXT, created_at TEXT, updated_at TEXT);
       CREATE TABLE operation (id INTEGER PRIMARY KEY AUTOINCREMENT, shop_id INTEGER NOT NULL, pool INTEGER DEFAULT 0, income INTEGER DEFAULT 0, turnover INTEGER DEFAULT 0);
-      CREATE TABLE record (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id INTEGER NOT NULL, player_id INTEGER NOT NULL, status TEXT DEFAULT 'ready', game JSON, startTime TEXT, endTime TEXT, created_at TEXT, updated_at TEXT);
-      CREATE TABLE award (id INTEGER PRIMARY KEY AUTOINCREMENT, shop_id INTEGER NOT NULL, type TEXT, price INTEGER DEFAULT 100, UNIQUE(shop_id,type));
+      CREATE TABLE record (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id INTEGER, player_id INTEGER NOT NULL, status TEXT DEFAULT 'ready', game JSON, startTime TEXT, endTime TEXT, created_at TEXT, updated_at TEXT);
+      CREATE TABLE award (id INTEGER PRIMARY KEY AUTOINCREMENT, shop_id INTEGER NOT NULL, type TEXT DEFAULT 's', price INTEGER DEFAULT 100);
       CREATE TABLE gift (id INTEGER PRIMARY KEY AUTOINCREMENT, award_id INTEGER NOT NULL, uuid TEXT UNIQUE, tag TEXT, picture TEXT, info JSON, created_at TEXT, updated_at TEXT);
       CREATE TABLE file (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE, unionid TEXT, user_id INTEGER, token TEXT, type TEXT, created_at TEXT, md5 TEXT UNIQUE, unlocked INTEGER DEFAULT 0);
     `);
@@ -36,12 +39,12 @@ class TestDatabase {
   async one(sql: string, params: any[] = []) { return (await this.query(sql, params))[0] ?? null; }
   async insert(table: string, data: Row) {
     const keys = Object.keys(data);
-    const result = this.sqlite.prepare(`INSERT INTO \`${table}\` (${keys.map(k => '`'+k+'`').join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => typeof data[k] === 'object' && data[k] !== null ? JSON.stringify(data[k]) : data[k]));
+    const result = this.sqlite.prepare(`INSERT INTO \`${table}\` (${keys.map(k => '`'+k+'`').join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => data[k] !== null && (['game','info'].includes(k) || typeof data[k] === 'object') ? JSON.stringify(data[k]) : data[k]));
     return this.one(`SELECT * FROM \`${table}\` WHERE id = ?`, [Number(result.lastInsertRowid)]);
   }
   async update(table: string, id: any, data: Row) {
     const keys = Object.keys(data);
-    if (keys.length) this.sqlite.prepare(`UPDATE \`${table}\` SET ${keys.map(k => '`'+k+'` = ?').join(',')} WHERE id = ?`).run(...keys.map(k => typeof data[k] === 'object' && data[k] !== null ? JSON.stringify(data[k]) : data[k]), id);
+    if (keys.length) this.sqlite.prepare(`UPDATE \`${table}\` SET ${keys.map(k => '`'+k+'` = ?').join(',')} WHERE id = ?`).run(...keys.map(k => data[k] !== null && (['game','info'].includes(k) || typeof data[k] === 'object') ? JSON.stringify(data[k]) : data[k]), id);
     return this.one(`SELECT * FROM \`${table}\` WHERE id = ?`, [id]);
   }
   async delete(table: string, id: any) { this.sqlite.prepare(`DELETE FROM \`${table}\` WHERE id = ?`).run(id); }
@@ -328,6 +331,40 @@ describe('v1 Yii serialization regressions',()=>{
     await call('POST','/v1/award',{shop_id:1,type:'small'});
     await expect(call('POST','/v1/award',{shop_id:1,type:'small'})).rejects.toMatchObject({status:422,response:[{field:'shop_id',message:'The combination "1"-"small" of Shop ID and Type has already been taken.'}]});
   });
+  test('required strings use PHP trim characters rather than JavaScript Unicode whitespace',async()=>{
+    await boot();
+    for (const tel of ['\u00a0','\f','\u2003']) {
+      const created=await call('POST','/v1/player',{tel});
+      expect(created.tel).toBe(tel);
+      expect((await db.one('SELECT tel FROM player WHERE id=?',[created.id]))!.tel).toBe(tel);
+    }
+    for (const tel of ['\0',' \t\n\r\0\v']) await expect(call('POST','/v1/player',{tel})).rejects.toMatchObject({status:422,response:[{field:'tel',message:'Tel cannot be blank.'}]});
+  });
+  test('REST updates validate unchanged legacy attributes before saving changed fields',async()=>{
+    await boot();await db.update('player',2,{tel:''});
+    const previous=await db.one('SELECT * FROM player WHERE id=2');
+    await expect(call('PATCH','/v1/player/:id',{nickname:'changed'},{},{id:'2'})).rejects.toMatchObject({status:422,response:[{field:'tel',message:'Tel cannot be blank.'}]});
+    expect(await db.one('SELECT * FROM player WHERE id=2')).toEqual(previous);
+  });
+  test('finish ignores a complete User validation failure while still restoring the pool and deleting the record',async()=>{
+    await boot();await db.update('player',2,{tel:'',updated_at:'2000-01-01 00:00:00'});
+    await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game:{points:10,secodes:60}});
+    const previous=await db.one('SELECT * FROM player WHERE id=2');
+    const response=await call('POST','/v1/game/finish',{points:3},{uuid:'device-1'});
+    expect(response).toMatchObject({success:true,message:'Game over',player:{points:50,times:0,tel:''}});
+    expect(await db.one('SELECT * FROM player WHERE id=2')).toEqual(previous);
+    expect(await db.one('SELECT pool FROM operation WHERE id=1')).toEqual({pool:7});
+    expect(await db.one('SELECT * FROM record WHERE id=1')).toBeNull();
+  });
+  test('finish propagates a player SQL failure rather than treating it as failed model validation',async()=>{
+    await boot();await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game:{points:10,secodes:60}});
+    const original=db.update.bind(db);
+    db.update=async(table:string,id:any,data:Row)=>{if(table==='player')throw new Error('intentional SQL failure');return original(table,id,data);};
+    await expect(call('POST','/v1/game/finish',{points:3},{uuid:'device-1'})).rejects.toThrow('intentional SQL failure');
+    expect(await db.one('SELECT points,times FROM player WHERE id=2')).toEqual({points:50,times:0});
+    expect(await db.one('SELECT pool FROM operation WHERE id=1')).toEqual({pool:0});
+    expect(await db.one('SELECT id FROM record WHERE id=1')).toEqual({id:1});
+  });
   test('custom signup and game device validation retain the source HTTP 400 envelopes',async()=>{
     await boot();
     await expect(call('POST','/v1/common/sign-up',{tel:' ',openId:'new'})).rejects.toMatchObject({status:400,message:'Invalid parameters{"tel":["Tel cannot be blank."]}'});
@@ -363,6 +400,14 @@ describe('v1 Yii serialization regressions',()=>{
     await boot();
     expect((await call('PATCH','/v1/player/:id',{recharge:'1.25e2',cost:'.5',give:'-2.5'},{},{id:'2'}))).toMatchObject({recharge:'1.25e2',cost:'.5',give:'-2.5'});
     expect(await db.one('SELECT recharge,cost,give FROM player WHERE id=2')).toEqual({recharge:125,cost:.5,give:-2.5});
+  });
+  test('numeric balance validation permits one terminal LF as PCRE does without accepting other line separators',async()=>{
+    await boot();
+    for (const field of ['recharge','cost','give']) {
+      expect(await call('PATCH','/v1/player/:id',{[field]:'1\n'},{},{id:'2'})).toMatchObject({[field]:'1\n'});
+      expect((await db.one('SELECT * FROM player WHERE id=2'))![field]).toBe(1);
+      for (const value of ['1\r','1\u2028','1\u2029','1\n\n']) await expect(call('PATCH','/v1/player/:id',{[field]:value},{},{id:'2'})).rejects.toMatchObject({status:422});
+    }
   });
   test('integer fields reject numeric JSON arrays instead of coercing them',async()=>{
     await boot();
@@ -407,6 +452,13 @@ describe('v1 Yii serialization regressions',()=>{
     await call('PATCH','/v1/award/:id',{price:250},{},{id:String(award.id)});
     expect((await call('PATCH','/v1/award/:id',{price:[]},{},{id:String(award.id)})).price).toBe(100);
   });
+  test('award updates reject another duplicate even when the current row is returned first',async()=>{
+    await boot();const first=await call('POST','/v1/award',{shop_id:1}),second=await call('POST','/v1/award',{shop_id:1});
+    expect(await db.query('SELECT id,type FROM award ORDER BY id')).toEqual([{id:first.id,type:'s'},{id:second.id,type:'s'}]);
+    for (const id of [first.id,second.id]) await expect(call('PATCH','/v1/award/:id',{price:200},{},{id:String(id)})).rejects.toMatchObject({status:422,response:[{field:'shop_id',message:'The combination "1"-"s" of Shop ID and Type has already been taken.'}]});
+    expect(await db.query('SELECT price FROM award ORDER BY id')).toEqual([{price:100},{price:100}]);
+    expect(await call('PATCH','/v1/award/:id',{type:'l'},{},{id:String(first.id)})).toMatchObject({type:'l'});
+  });
   test('record device expansion obeys nested fields without exposing the full row',async()=>{
     await boot();const row=await db.insert('record',{device_id:1,player_id:2,game:{points:1,secodes:60}});
     const selected=await call('GET','/v1/record/:id',{}, {expand:'device',fields:'id,device.id'}, {id:String(row!.id)});
@@ -417,6 +469,13 @@ describe('v1 Yii serialization regressions',()=>{
     const gift=await call('POST','/v1/gift',{award_id:award.id,uuid:'nested-gift',tag:'private-tag'});
     const selected=await call('GET','/v1/shop/:id',{}, {expand:'awards,gifts',fields:'id,awards.id,gifts.id'}, {id:'1'});
     expect(selected).toEqual({id:1,awards:[{id:award.id}],gifts:[{id:gift.id}]});
+  });
+  test('only shop gift expansion exposes the eager-loaded award and applies its nested fields',async()=>{
+    await boot();const award=await call('POST','/v1/award',{shop_id:1,type:'s'});
+    const gift=await call('POST','/v1/gift',{award_id:award.id,uuid:'gift-award'});
+    const expanded=await call('GET','/v1/shop/:id',{}, {expand:'gifts.award',fields:'id,gifts.id,gifts.award.id'}, {id:'1'});
+    expect(expanded).toEqual({id:1,gifts:[{id:gift.id,award:{id:award.id}}]});
+    expect(await call('GET','/v1/gift/:id',{}, {expand:'award',fields:'id,award.id'}, {id:String(gift.id)})).toEqual({id:gift.id});
   });
   test('REST creation emits an absolute Location URL with the route identity',async()=>{
     await boot();const headers:Row={},ctx=context({uuid:'absolute-device'});
@@ -650,6 +709,52 @@ describe('live Yii differential regressions',()=>{
     expect(await db.query('SELECT * FROM record')).toHaveLength(1);
     expect(await db.one('SELECT ip FROM device WHERE id=1')).toEqual({ip:'127.0.0.1'});
   });
+  test.each([null,{},[],'hello',1,1.5,true,false,{points:[]},{points:{bad:1}},{points:'abc'},{points:'1\u2028'}])('malformed stored game %j fails before crediting points or deleting its record',async game=>{
+    await boot();await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game});
+    const previousPlayer=await db.one('SELECT * FROM player WHERE id=2'),previousOperation=await db.one('SELECT * FROM operation WHERE id=1');
+    await expect(call('POST','/v1/game/finish',{points:3},{uuid:'device-1'})).rejects.toMatchObject({status:500});
+    expect(await db.one('SELECT * FROM player WHERE id=2')).toEqual(previousPlayer);
+    expect(await db.one('SELECT * FROM operation WHERE id=1')).toEqual(previousOperation);
+    expect(await db.one('SELECT id FROM record WHERE id=1')).toEqual({id:1});
+  });
+  test.each([
+    {budget:null,points:50,times:1,pool:0},
+    {budget:true,points:53,times:1,pool:-2},
+    {budget:false,points:50,times:1,pool:0},
+    {budget:'10',points:53,times:1,pool:7},
+    {budget:1.5,points:50,times:0,pool:0},
+  ])('stored PHP budget $budget preserves comparison and independent-save semantics',async({budget,points,times,pool})=>{
+    await boot();await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game:{points:budget,secodes:60}});
+    expect((await call('POST','/v1/game/finish',{points:3},{uuid:'device-1'})).player).toMatchObject({points,times});
+    expect(await db.one('SELECT pool FROM operation WHERE id=1')).toEqual({pool});
+    expect(await db.one('SELECT * FROM record WHERE id=1')).toBeNull();
+  });
+  test.each([[],{},'abc'])('closing a record with invalid stored restore %j preserves balances and its record',async points=>{
+    await boot();await db.update('player',2,{cost:10});await db.insert('record',{id:1,device_id:1,player_id:2,status:'ready',game:{points,secodes:60}});
+    const previousPlayer=await db.one('SELECT * FROM player WHERE id=2'),previousOperation=await db.one('SELECT * FROM operation WHERE id=1');
+    await expect(call('POST','/v1/system/close-record',{recordId:1})).rejects.toMatchObject({status:500});
+    expect(await db.one('SELECT * FROM player WHERE id=2')).toEqual(previousPlayer);
+    expect(await db.one('SELECT * FROM operation WHERE id=1')).toEqual(previousOperation);
+    expect(await db.one('SELECT id FROM record WHERE id=1')).toEqual({id:1});
+  });
+  test.each(['ready-game','finish','close-record','close-record-history'])('missing shop relation during %s retains the source error and financial state',async action=>{
+    await boot();
+    if(action!=='close-record-history')await db.update('device',1,{shop_id:null});
+    if(action!=='ready-game')await db.insert('record',{id:1,device_id:action==='close-record-history'?null:1,player_id:2,status:'running',game:{points:10,secodes:60}});
+    const previous={player:await db.one('SELECT * FROM player WHERE id=2'),operation:await db.one('SELECT * FROM operation WHERE id=1'),records:await db.query('SELECT * FROM record')};
+    const request=action==='ready-game'?call('GET','/v1/system/ready-game',{}, {targetId:2,deviceId:1}):action==='finish'?call('POST','/v1/game/finish',{points:3},{uuid:'device-1'}):call('POST','/v1/system/close-record',{recordId:1});
+    await expect(request).rejects.toMatchObject({status:500,responseBody:{type:'yii\\base\\ErrorException',message:'Attempt to read property "'+(action==='finish'?'operation':'price')+'" on null'}});
+    expect(await db.one('SELECT * FROM player WHERE id=2')).toEqual(previous.player);
+    expect(await db.one('SELECT * FROM operation WHERE id=1')).toEqual(previous.operation);
+    expect(await db.query('SELECT * FROM record')).toEqual(previous.records);
+  });
+  test('finish checks required score and malformed budget before dereferencing a missing shop',async()=>{
+    await boot();await db.update('device',1,{shop_id:null});await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game:{}});
+    await expect(call('POST','/v1/game/finish',{}, {uuid:'device-1'})).rejects.toMatchObject({status:400,message:'points is required'});
+    await expect(call('POST','/v1/game/finish',{points:3},{uuid:'device-1'})).rejects.toMatchObject({status:500,responseBody:{message:'Undefined array key "points"'}});
+    expect(await db.one('SELECT points,times FROM player WHERE id=2')).toEqual({points:50,times:0});
+    expect(await db.one('SELECT id FROM record WHERE id=1')).toEqual({id:1});
+  });
   test.each(['start','restart','finish'])('game %s keeps source device registration before a missing-record error',async action=>{
     await boot();
     await expect(call('POST','/v1/game/'+action,{}, {uuid:'registered-before-error'})).rejects.toMatchObject({status:400,message:'No record'});
@@ -677,5 +782,94 @@ describe('live Yii differential regressions',()=>{
     await expect(call('POST','/v1/local/refresh',{token:ownerToken,openid:'owner',status:'ready'},ownerQuery)).rejects.toMatchObject({status:500,responseBody:{type:'TypeError'}});
     expect(await redis.find('checkin',ownerToken)).toMatchObject({openid:'owner',status:'ready'});
     expect(await redis.find('recode_file',ownerToken)).toBeNull();
+  });
+  test('Redis updates pass their original AR snapshots while a different owner creates a new AR',async()=>{
+    await boot();
+    const token='R'+'a'.repeat(32),originalReport={token,device:'AR',status:'ready',data:'older'};
+    redis.data.set('report:'+token,{...originalReport});
+    const writes=vi.spyOn(redis,'save');
+    const body={token,device:'AR',openid:'',key:'',status:'running'},time='123';
+    const hash=createHash('md5').update(token+time+'ARbuj1aban.c0m').digest('hex');
+    await call('POST','/v1/local/refresh',body,{time,hash});
+    expect(writes.mock.calls.at(-1)).toEqual(['report',expect.objectContaining({status:'running'}),originalReport]);
+    const originalCheckin={token,openid:'owner',status:'ready',data:'older'};
+    redis.data.set('checkin:'+token,{...originalCheckin});
+    await call('POST','/v1/checkin/status-linked',{token,openid:'owner'});
+    expect(writes.mock.calls.at(-1)).toEqual(['checkin',expect.objectContaining({status:'linked'}),originalCheckin]);
+    await call('POST','/v1/checkin/status-ready',{token,openid:'different-owner'});
+    expect(writes.mock.calls.at(-1)).toEqual(['checkin',expect.objectContaining({openid:'different-owner'}),null]);
+    const originalFile={token,key:'old.jpg',created_at:'100'};
+    redis.data.set('recode_file:'+token,{...originalFile});
+    await call('POST','/v1/checkin/upload',{token,key:'new.jpg'});
+    expect(writes.mock.calls.at(-1)).toEqual(['recode_file',expect.objectContaining({key:'new.jpg'}),originalFile]);
+  });
+  test('protocol Redis writes preserve raw JSON float metadata for PHP string casting',async()=>{
+    await boot();const token='S'+'a'.repeat(32),writes=vi.spyOn(redis,'save'),time='123';
+    const body=parsePhpJson(JSON.stringify({token,device:'AR',openid:'',key:''}).slice(0,-1)+',"data":100000000000000.0}');
+    const hash=createHash('md5').update(token+time+'ARbuj1aban.c0m').digest('hex');
+    await call('POST','/v1/local/refresh',body,{time,hash});
+    expect(phpNumberType(writes.mock.calls.at(-1)![1],'data')).toBe('double');
+    await redis.save('checkin',{token,openid:'owner'});
+    const upload=parsePhpJson('{"token":"'+token+'","key":100000000000000.0}');
+    await call('POST','/v1/checkin/upload',upload);
+    expect(phpNumberType(writes.mock.calls.at(-1)![1],'key')).toBe('double');
+  });
+  const sourceRoot=resolve(process.env.YII2_SOURCE_ROOT || resolve(__dirname,'../../game'));
+  test.skipIf(!existsSync(resolve(sourceRoot,'api/vendor/yiisoft/yii2/Yii.php')))('stored game budgets match the actual original GameController action without database or network',async()=>{
+    await boot();
+    const values=[null,true,false,0,1,3,-1,1.5,'10','01','0','0abc','-abc','abc','1\n','1\u2028','1\u2029',[],[1],{x:1}];
+    const cases=[
+      ...[null,{},[],'hello',1,1.5,true,false].map(game=>({game,points:3})),
+      ...values.flatMap(budget=>values.map(points=>({game:{points:budget},points}))),
+    ];
+    const code=String.raw`
+namespace {
+ $input=json_decode(stream_get_contents(STDIN),true,512,JSON_THROW_ON_ERROR);$root=$input['root'];
+ require $root.'/api/vendor/autoload.php';require $root.'/api/vendor/yiisoft/yii2/Yii.php';Yii::setAlias('@app',$root.'/api');
+}
+namespace app\modules\v1\models {
+ // Only the source controller's persistence boundary is replaced. The actual
+ // actionFinish/getDevice bodies and Yii integer validator execute unchanged.
+ class Device {
+  public static $fixture;public $id=1,$uuid='fixture',$ip='127.0.0.1',$record,$shop;
+  public static function find(){return new class {public function where($c){return $this;}public function one(){return Device::$fixture;}};}
+  public function validate(){return true;}public function save(){return true;}
+ }
+}
+namespace {
+ class OfflineController extends app\modules\v1\controllers\GameController{public function init(){}}
+ class OfflineFinishUser {
+  public $points=50,$times=0,$stored=['points'=>50,'times'=>0];
+  public function save(){$v=new yii\validators\NumberValidator(['integerOnly'=>true,'message'=>'invalid']);if(!$v->validate($this->points)||!$v->validate($this->times))return false;$this->stored=['points'=>(int)$this->points,'times'=>(int)$this->times];return true;}
+  public function __get($name){return $name==='player'?$this->stored:null;}
+ }
+ class OfflineFinishOperation {public $pool=0,$stored=0;public function save(){$v=new yii\validators\NumberValidator(['integerOnly'=>true,'message'=>'invalid']);if(!$v->validate($this->pool))return false;$this->stored=(int)$this->pool;return true;}}
+ class OfflineFinishRecord {public $game,$user,$status='running',$deleted=false;public function delete(){$this->deleted=true;}}
+ $request=new yii\web\Request(['cookieValidationKey'=>'offline']);$request->setQueryParams(['uuid'=>'fixture']);$_SERVER['REMOTE_ADDR']='127.0.0.1';
+ Yii::$app=new class($request){public $request,$language='en-US';public function __construct($request){$this->request=$request;}public function getI18n(){return new class {public function translate($category,$message,$params=[],$language=null){return $message;}public function format($message,$params=[],$language=null){return $message;}};}};
+ $controller=new OfflineController('game',new yii\base\Module('v1'));
+ set_error_handler(static function($severity,$message){if(!(error_reporting()&$severity))return false;throw new yii\base\ErrorException($message,$severity,$severity);});
+ $results=[];
+ foreach($input['cases'] as $case){
+  $request->setBodyParams(['points'=>$case['points']]);$user=new OfflineFinishUser();$op=new OfflineFinishOperation();$record=new OfflineFinishRecord();$record->game=$case['game'];$record->user=$user;
+  $device=new app\modules\v1\models\Device();$device->record=$record;$device->shop=(object)['operation'=>$op];app\modules\v1\models\Device::$fixture=$device;
+  try{$controller->actionFinish();$error=null;}catch(\Throwable $e){$error=['type'=>get_class($e),'message'=>$e->getMessage()];}
+  $results[]=['player'=>$user->stored,'pool'=>$op->stored,'recordDeleted'=>$record->deleted,'error'=>$error];
+ }
+ echo json_encode(['phpVersion'=>PHP_VERSION,'results'=>$results],JSON_THROW_ON_ERROR);
+}
+`;
+    const execution=spawnSync('php',['-d','display_errors=stderr','-d','error_reporting=8191','-r',code],{input:JSON.stringify({root:sourceRoot,cases}),encoding:'utf8',timeout:10000});
+    expect(execution.error).toBeUndefined();expect(execution.status,execution.stderr).toBe(0);
+    const oracle=JSON.parse(execution.stdout);
+    for (const [index,item] of cases.entries()) {
+      await db.delete('record',1);await db.update('player',2,{points:50,times:0});await db.update('operation',1,{pool:0});
+      await db.insert('record',{id:1,device_id:1,player_id:2,status:'running',game:item.game});
+      let error:any=null;
+      try {await call('POST','/v1/game/finish',{points:item.points},{uuid:'device-1'});}
+      catch(caught:any){error={type:caught.responseBody?.type ?? (caught.yiiType === 'HttpException' ? 'yii\\web\\HttpException' : caught.yiiType),message:caught.responseBody?.message ?? caught.message};}
+      const actual={player:await db.one('SELECT points,times FROM player WHERE id=2'),pool:(await db.one('SELECT pool FROM operation WHERE id=1'))!.pool,recordDeleted:!await db.one('SELECT id FROM record WHERE id=1'),error};
+      expect(actual,JSON.stringify({case:item,phpVersion:oracle.phpVersion})).toEqual(oracle.results[index]);
+    }
   });
 });

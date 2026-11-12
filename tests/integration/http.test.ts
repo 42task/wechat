@@ -138,6 +138,76 @@ describe.skipIf(process.env.RUN_INTEGRATION !== '1')('real HTTP + MySQL-compatib
     await agent.put('/admin-api/devices/1/configuration').send({ slogans: {} }).expect(422);
     await agent.put('/admin-api/devices/1/configuration').send([]).expect(422);
   });
+  it.each(['configuration', 'game'])('keeps PHP integer validation for raw JSON gameId on %s without writing rejected values', async endpoint => {
+    const { agent } = await login();
+    const before = await s.db.one('SELECT * FROM setup WHERE device_id=1');
+    for (const lexeme of ['3.0', '3e0', '30e-1', '3.0000000000000001']) {
+      const rejected = await agent.put(`/admin-api/devices/1/${endpoint}`)
+        .set('Content-Type', 'application/json').send(`{"gameId":${lexeme},"title":"Rejected rename"}`).expect(422);
+      expect(rejected.body.message).toBe('gameId 必须为有效的游戏编号');
+      expect(await s.db.one('SELECT * FROM setup WHERE device_id=1')).toEqual(before);
+    }
+    const accepted = await agent.put(`/admin-api/devices/1/${endpoint}`)
+      .set('Content-Type', 'application/json').send('{"gameId":3}').expect(200);
+    expect(accepted.body.gameId).toBe(3);
+  });
+  it('keeps the persisted setup timestamp when administrators repeat identical configuration', async () => {
+    const { agent } = await login();
+    const originalTime = '2000-01-01 00:00:00';
+    await s.db.execute('UPDATE setup SET updated_at=? WHERE device_id=1', [originalTime]);
+    await agent.put('/admin-api/devices/1/configuration').send({ title: ' Owned device ', slogans: [' keep '], pictures: [], thumbs: [] }).expect(200);
+    expect((await s.db.one('SELECT updated_at FROM setup WHERE device_id=1'))?.updated_at).toBe(originalTime);
+    await agent.put('/admin-api/devices/1/game').send({ gameId: 3 }).expect(200);
+    expect((await s.db.one('SELECT updated_at FROM setup WHERE device_id=1'))?.updated_at).toBe(originalTime);
+    await agent.put('/admin-api/devices/1/configuration').send({ title: 'Changed device' }).expect(200);
+    expect((await s.db.one('SELECT title,updated_at FROM setup WHERE device_id=1'))).toMatchObject({ title: 'Changed device', updated_at: expect.not.stringMatching(/^2000-/) });
+  });
+  it('normalizes existing associative JSON written by the v2 setup API for administrator reads', async () => {
+    const setup = (await s.db.one('SELECT id FROM setup WHERE device_id=1'))!;
+    await request.patch(`/v2/setups/${setup.id}`).set('Authorization', `Bearer ${token}`)
+      .set('Content-Type', 'application/json').send('{"slogans":{"first":" hello ","second":"world"},"pictures":{"2":" two ","0":"zero"},"thumbs":{"a":" thumb "}}').expect(200);
+    const { agent } = await login();
+    const devices = await agent.get('/admin-api/devices').expect(200);
+    const stored = (await s.db.one('SELECT * FROM setup WHERE device_id=1'))!;
+    expect(devices.body.find((device: any) => device.id === 1)).toMatchObject({
+      slogans: Object.values(stored.slogans).map(value => String(value).trim()),
+      pictures: Object.values(stored.pictures).map(value => String(value).trim()),
+      thumbs: ['thumb'],
+    });
+  });
+  it('rejects PHP-invalid JSON lazily after authentication and before configuration writes', async () => {
+    const { agent } = await login();
+    const before = await s.db.one('SELECT * FROM setup WHERE device_id=1');
+    const invalid: Array<[string | Buffer, string]> = [
+      ['{"title":"\\ud800"}', 'Single unpaired UTF-16 surrogate in unicode escape'],
+      ['{"title":"\\udc00"}', 'Single unpaired UTF-16 surrogate in unicode escape'],
+      ['{"title":"\\ud800","title":"valid"}', 'Single unpaired UTF-16 surrogate in unicode escape'],
+      ['['.repeat(512) + '0' + ']'.repeat(512), 'Maximum stack depth exceeded'],
+      [Buffer.concat([Buffer.from('{"title":"'), Buffer.from([255]), Buffer.from('"}')]), 'Malformed UTF-8 characters, possibly incorrectly encoded'],
+    ];
+    for (const [raw, reason] of invalid) {
+      // Superagent otherwise JSON-serializes Buffer into {type,data}, losing
+      // the invalid UTF-8 byte this request is meant to exercise.
+      const rejected = await agent.put('/admin-api/devices/1/configuration').set('Content-Type', 'application/json').serialize(data => data).send(raw).expect(400);
+      expect(rejected.body.message).toBe(`Invalid JSON data in request body: ${reason}`);
+      expect(await s.db.one('SELECT * FROM setup WHERE device_id=1')).toEqual(before);
+    }
+    await request.put('/admin-api/devices/1/configuration').set('Content-Type', 'application/json').send(invalid[0][0]).expect(401);
+  });
+  it('casts oversized administrator path IDs like PHP instead of passing Infinity to SQL', async () => {
+    const { agent } = await login();
+    const id = '9'.repeat(400);
+    await agent.get(`/admin-api/devices/${id}/image-previews`).expect(404);
+    await agent.put(`/admin-api/devices/${id}/configuration`).send({ title: 'Missing' }).expect(404);
+    await agent.delete(`/admin-api/devices/${id}`).expect(404);
+  });
+  it('keeps overflowing safe JSON out of MySQL instead of silently storing null', async () => {
+    const before = (await s.db.one('SELECT * FROM setup WHERE device_id=1'))!;
+    const response = await request.patch(`/v2/setups/${before.id}`).set('Authorization', `Bearer ${token}`)
+      .set('Content-Type', 'application/json').send('{"slogans":[1e400]}').expect(500);
+    expect(response.body).toEqual({ name: 'Exception', message: 'Inf and NaN cannot be JSON encoded', code: 7, type: 'yii\\base\\InvalidArgumentException' });
+    expect(await s.db.one('SELECT * FROM setup WHERE device_id=1')).toEqual(before);
+  });
   it('preserves JSON scalar types in Yii safe fields including strings that look like JSON', async () => {
     const setup = (await s.db.one('SELECT id FROM setup WHERE device_id=1'))!;
     const values = { slogans: '备注', pictures: '["picture"]', thumbs: '123', shots: false };

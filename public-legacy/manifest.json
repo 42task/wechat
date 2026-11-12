@@ -1,0 +1,36 @@
+{
+  "sourceRepository": "https://github.com/gdgeek/game",
+  "sourceRevision": "74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b",
+  "files": [
+    {
+      "path": "/HyffLvU10s.txt",
+      "sourcePath": "api/web/HyffLvU10s.txt",
+      "sha256": "ce3991065222265e87b68d928a2d203175b9c937c94ed37d0e686dc043a6f40f",
+      "bytes": 33
+    },
+    {
+      "path": "/YnLzIY5Yjs.txt",
+      "sourcePath": "api/web/YnLzIY5Yjs.txt",
+      "sha256": "df35e9dd0ab840d62dbe7573f591220456762a9f62e5ff1e12054836ead640cf",
+      "bytes": 32
+    },
+    {
+      "path": "/robots.txt",
+      "sourcePath": "api/web/robots.txt",
+      "sha256": "3a125e84a637dc3f5442bb6949fa200056f37db4627b4c2a3addc55bbb89b703",
+      "bytes": 23
+    },
+    {
+      "path": "/favicon.ico",
+      "sourcePath": "api/web/favicon.ico",
+      "sha256": "66332859bd8e3441a019e073a318b62a47014ba244121301034b510dc7532271",
+      "bytes": 318
+    },
+    {
+      "path": "/css/site.css",
+      "sourcePath": "api/web/css/site.css",
+      "sha256": "dd8244db974c7c3dc0abee2bae3d728338a6da160395c7e83b38764da52e4044",
+      "bytes": 1528
+    }
+  ]
+}

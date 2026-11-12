@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { createClient } from 'redis';
 import type { Row } from './contracts';
+import { copyPhpMetadata, phpFloatString, phpNumberType, phpValuesEqual } from './php';
+import { ApiError } from './errors';
 
 export interface RedisConnectionOptions { host?: string; port?: number; database?: number; password?: string; url?: string; timeout?: number; }
 export function adminRedisOptions(env: NodeJS.ProcessEnv = process.env): RedisConnectionOptions {
@@ -61,15 +63,60 @@ export class LegacyRedis {
     const rows = await Promise.all(pks.map(pk => this.find(model, pk)));
     return rows.filter((row): row is Row => row !== null);
   }
-  async save(model: string, row: Row): Promise<Row> {
+  /** null means a new Yii AR; a row is its old attributes; undefined is legacy upsert. */
+  async save(model: string, row: Row, previous?: Row | null): Promise<Row> {
     const primary = row.token !== undefined ? 'token' : 'id';
-    const pk = row[primary] ?? await this.command(['INCR', `${model}:s:${primary}`]);
-    row = { ...row, [primary]: pk };
+    const assignedPk = row[primary];
+    const pk = assignedPk ?? await this.command(['INCR', `${model}:s:${primary}`]);
+    row = copyPhpMetadata(row, { ...row, [primary]: pk });
     const key = buildRedisKey(pk);
-    const attributes = Object.entries(row).filter(([, value]) => value !== null && value !== undefined).flatMap(([name, value]) => [name, typeof value === 'object' ? JSON.stringify(value) : typeof value === 'boolean' ? String(Number(value)) : String(value)]);
+    const changes = Object.entries(row).filter(([name, value]) => value !== undefined && (!previous || !Object.hasOwn(previous, name) || !phpValuesEqual(value, previous[name], phpNumberType(row, name), phpNumberType(previous, name))));
+    const attributes = (): string[] => changes.filter(([, value]) => value !== null).flatMap(([name, value]) => {
+      if (typeof value === 'object') {
+        // HTTP JSON objects decode to PHP arrays too. Yii builds the entire
+        // HMSET command before sending it; mb_strlen(array) fails at this stage.
+        if (previous !== undefined) {
+          const message = 'mb_strlen(): Argument #1 ($string) must be of type string, array given';
+          const error = new ApiError(500, message);
+          const debug = !['0', 'false', 'off'].includes((process.env.YII_DEBUG ?? 'true').toLowerCase());
+          error.responseBody = debug ? { name: 'Exception', message, code: 0, type: 'TypeError' }
+            : { name: 'Internal Server Error', message: 'An internal server error occurred.', code: 0, status: 500 };
+          throw error;
+        }
+        return [name, JSON.stringify(value)];
+      }
+      const type = phpNumberType(row, name) ?? (Number.isInteger(value) ? 'integer' : 'double');
+      return [name, typeof value === 'boolean' ? String(Number(value)) : typeof value === 'number' && type === 'double' ? phpFloatString(value) : String(value)];
+    });
+    if (previous === null) {
+      // yii2-redis insert() advances explicit numeric primary-key counters and
+      // appends the pool entry even when a different AR already used that key.
+      if (assignedPk !== null && assignedPk !== undefined && (typeof pk === 'number' || typeof pk === 'string' && /^[ \t\n\r\f\v]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[ \t\n\r\f\v]*$/.test(pk))) {
+        const counterKey = `${model}:s:${primary}`, current = await this.command(['GET', counterKey]);
+        const greater = current === null ? (typeof pk === 'string' ? pk !== '' : !!pk)
+          : typeof pk === 'string' && /^[+-]?\d+$/.test(pk) && /^[+-]?\d+$/.test(String(current))
+            ? BigInt(pk) > BigInt(current) : Number(pk) > Number(current);
+        if (greater) await this.command(['SET', counterKey, String(pk)]);
+      }
+      await this.command(['RPUSH', model, key]);
+      const values = attributes();
+      if (values.length) await this.command(['HMSET', `${model}:a:${key}`, ...values]);
+      // insert() omits null fields; it does not remove an older hash's values.
+      return row;
+    }
+    const nulls = changes.filter(([, value]) => value === null).map(([name]) => name);
+    if (previous) {
+      if (!changes.length) return row;
+      // Like updateAll()'s primary-key lookup, a disappeared AR is not inserted
+      // again. The separate Redis writes retain the source's race semantics.
+      if (!Number(await this.command(['EXISTS', `${model}:a:${key}`]))) return row;
+      const values = attributes();
+      if (values.length) await this.command(['HMSET', `${model}:a:${key}`, ...values]);
+      if (nulls.length) await this.command(['HDEL', `${model}:a:${key}`, ...nulls]);
+      return row;
+    }
     const script = "if redis.call('EXISTS',KEYS[1])==0 then redis.call('RPUSH',KEYS[2],ARGV[1]) end; for i=2,#ARGV,2 do redis.call('HSET',KEYS[1],ARGV[i],ARGV[i+1]) end; return 1";
-    await this.command(['EVAL', script, '2', `${model}:a:${key}`, model, key, ...attributes]);
-    const nulls = Object.entries(row).filter(([, value]) => value === null).map(([name]) => name);
+    await this.command(['EVAL', script, '2', `${model}:a:${key}`, model, key, ...attributes()]);
     if (nulls.length) await this.command(['HDEL', `${model}:a:${key}`, ...nulls]);
     return row;
   }

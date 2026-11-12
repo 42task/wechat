@@ -1,8 +1,8 @@
 # wechat — game 的 Node.js 后端
 
-使用 Node.js 24、TypeScript、NestJS 重写 `gdgeek/game` 的 Yii2 后端。只包含后端；现有 Vue 管理后台、微信小程序和设备程序继续使用原接口。
+使用 Node.js 24、TypeScript、NestJS 重写 [gdgeek/game](https://github.com/gdgeek/game) 的 Yii2 后端。当前后端仓库为 [42task/wechat](https://github.com/42task/wechat)，微信小程序为 [42task/bujiaban-mp](https://github.com/42task/bujiaban-mp)，两者迁移保留 Git 历史。Vue 管理前端已从原项目抽离至 [42task/checkin-frontend](https://github.com/42task/checkin-frontend)；`game` 保持未修改的 Yii 对照实现。客户端继续使用原接口。
 
-兼容范围包括 `/v1` 游戏、玩家、商户、奖品、积分、签到与文件流程，`/v2` 微信身份、设备配置、版本上报、状态协调、文件与云存储，`/admin-api` 密码/扫码登录、管理 JWT 刷新和撤销、设备权限及配置，以及健康检查和受 Basic Auth 保护的 Swagger 文档。
+兼容范围包括 `/v1` 游戏、玩家、商户、奖品、积分、签到与文件流程，`/v2` 微信身份、设备配置、版本上报、状态协调、文件与云存储，`/admin-api` 密码/扫码登录、管理 JWT 刷新和撤销、设备权限及配置，以及健康检查、受 Basic Auth 保护的 Swagger 和五个固定路径的原始公开静态文件。
 
 ## 启动
 
@@ -14,11 +14,11 @@ npm run build
 npm start
 ```
 
-数据库、Redis 沿用现有 MySQL 协议数据库和 Yii Redis ActiveRecord 键格式。`JWT_KEY` 兼容原密钥文件，亦可使用 `JWT_SECRET`；要接收原 Token，必须配置相同签名密钥。原微信、腾讯云环境变量名称也可继续使用，详见 [集成说明](src/integrations/README.md)。
+数据库使用 MySQL，Redis 沿用 Yii Redis ActiveRecord 键格式。`JWT_KEY` 兼容原密钥文件，亦可使用 `JWT_SECRET`；要接收原 Token，必须配置相同签名密钥。原微信、腾讯云环境变量名称也可继续使用，详见 [集成说明](src/integrations/README.md)。
 
 Web 管理端使用当前 Yii 的独立 `game-admin` ES256 Bearer JWT，登录和扫码消费返回 `{user,token,authMode:"jwt"}`，通过 `/admin-api/refresh` 轮换刷新令牌，退出撤销整次登录。访问令牌最长三小时，刷新不会延长原八小时期限。扫码浏览器凭据使用现有 `X-Admin-Scan-Owner` 请求头；管理端不要求 Cookie 或 CSRF。
 
-沿用相同 `ADMIN_JWT_KEY` / `ADMIN_JWT_PUB_KEY`、`ADMIN_AUTH_ISSUER` 以及 `ADMIN_AUTH_REDIS_*` 后，Yii 与 Node 可共享管理令牌、刷新状态、密码限流和扫码 owner 锁。认证 Redis 独立于业务 Redis 配置，连接失败返回 503。小程序继续使用原 HS256 Bearer Token，v1/v2 与管理身份域严格隔离；设备状态继续使用原 time/hash 协议。前端、小程序及设备端不需要修改。
+沿用相同 `ADMIN_JWT_KEY` / `ADMIN_JWT_PUB_KEY`、`ADMIN_AUTH_ISSUER` 以及 `ADMIN_AUTH_REDIS_*` 后，Yii 与 Node 可共享管理令牌、刷新状态、密码限流和扫码 owner 锁。认证 Redis 独立于业务 Redis 配置，连接失败返回 503。小程序继续使用原 HS256 Bearer Token，v1/v2 与管理身份域严格隔离。设备支持原 time/hash 协议；现线上 Yii 的 dev 免签分支与 Node `GAME_DEV_AUTH=0` 尚需在切换前明确对齐。扫码 create/approve 的 Yii FileCache 与 Node SQL 限流计数不共享。
 
 ## 数据库
 
@@ -42,7 +42,11 @@ npm run migrate -- --bootstrap
 
 ## 验证
 
-2026-11-12 本轮兼容性修复、MySQL 回归结果、已保留差异及线上验收边界见 [验证记录](docs/VALIDATION.md)。当前本地候选尚未部署，真实环境验收完成前不建议切换。
+2026-11-12 本轮逻辑候选已完成真实隔离 MySQL/Redis **1,257/1,257** 回归（0 失败、0 跳过），实际 Yii / 编译版 Node HTTP 与业务差分 **882/883**，仅保留诊断 Bearer 脱敏，没有未解释的差分。发布与部署状态须按固定 SHA、CI 和健康接口核对，不能借用较早线上候选的验收结果。
+
+较早候选 `d8294e95aa29d3aefa729107a1dd2f3b63d0d823` 已通过 [应用 CI](https://github.com/42task/wechat/actions/runs/43226455851) 的 1,029 项测试及发布，现仍运行在 b0 尚未使用的 Node 容器（[健康接口](https://x2.b0.01xr.com/health)）。该候选专属 fixture 对照 24/24、无对象写入探测 8/8 已通过并完成 fixture 清理；22 项业务环境值与 6 个密钥文件内容已只读核对一致。Yii、b1 Node 和业务入口未切换，没有迁移或 Stack 整体重部署。
+
+用户已决定先完成代码和逻辑对应，确认后切换后端；真实微信/手机号、支付退款回调、COS 对象和实体设备联调延期。本地逻辑与回归已完成，仍须完成候选发布、设备认证配置及入口/回滚核对，尚不宣称替换完成。诊断脱敏、TLS 校验、更强事务回滚、扫码限流存储和超出业务 INT32 范围的 PHP64 精度边界均保留说明，见 [验证记录](docs/VALIDATION.md)。
 
 ```sh
 npm run build
@@ -65,7 +69,7 @@ RUN_INTEGRATION=1 V1_MYSQL_TEST_URL='mysql://root:wechat-local-test@127.0.0.1:33
 
 `wechat_schema_test` 是专用的可重建测试库，v1 集成测试会重建它；`wechat_test` 的 HTTP fixtures 也会清理测试行。管理认证使用同一个隔离 Redis 的 DB 15，并清理 `game:admin:auth:*` 测试键。迁移测试创建唯一命名的新库、只清理自己成功创建的库，不复用同名既有数据。不要把这些变量指向业务资源。测试完成后 `docker compose -f compose.test.yaml down`。
 
-源路由与实现对照、已损坏旧入口和具体兼容处理见 [API_PARITY.md](docs/API_PARITY.md)。路由覆盖与自动测试不能替代真实微信账号、支付商户回调、COS 权限和设备联调；这些外部验收尚未在本仓库执行。
+源路由与实现对照、已损坏旧入口和具体兼容处理见 [API_PARITY.md](docs/API_PARITY.md)。线上探测已验证支付材料配置检查、实际 STS 签发和临时凭据对缺失对象的 HEAD；没有执行实际支付/退款、对象 PUT/GET/DELETE 或实体设备联调，不能把探测通过当作这些流程已完成。
 
 有当前 Yii 源码和 PHP/Composer 环境时，可复现真实双向管理令牌互通检查（仅接受显式指定的 localhost 非 6379 测试端口、DB 15，临时密钥和随机 issuer）：
 

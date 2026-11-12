@@ -3,7 +3,7 @@ import { createDecipheriv, createHash, createHmac, createPrivateKey, createPubli
 import { readFileSync, statSync } from 'node:fs';
 import { STATUS_CODES } from 'node:http';
 import type { Row } from '../core/contracts';
-import { phpInt } from '../core/php';
+import { parsePhpJson, phpInt } from '../core/php';
 
 /** Actual provider transports. No endpoint forwards to the retired PHP service. */
 export interface IntegrationOptions {
@@ -95,7 +95,7 @@ function originalException(message: string, type: string, name = 'Exception', co
 }
 function phpJson(value: unknown): string {
   const arrays = (item: any): any => Array.isArray(item) ? item.map(arrays) : record(item) ? Object.keys(item).length ? Object.fromEntries(Object.entries(item).map(([key, child]) => [key, arrays(child)])) : [] : item;
-  return JSON.stringify(arrays(value)).replace(/\//g, '\\/');
+  return JSON.stringify(arrays(value)).replace(/\//g, '\\/').replace(/[\u0080-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 function record(value: unknown): value is Row { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function enc(value: string): string { return encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`); }
@@ -226,10 +226,13 @@ export class Integrations {
     if (!response.ok) originalException('WeChat Pay API request failed.', 'EasyWeChat\\Kernel\\Exceptions\\BadResponseException', 'Exception', response.status);
     const raw = await response.text();
     this.verifyPayment(raw, response.headers);
+    if (raw === '') return originalException('Response body is empty.', 'EasyWeChat\\Kernel\\Exceptions\\BadResponseException');
     let result: unknown;
-    try { result = raw ? JSON.parse(raw) : {}; } catch { return failure(502, '微信支付响应格式无效'); }
-    if (!record(result)) return failure(502, '微信支付响应格式无效');
-    return result;
+    try { result = parsePhpJson(raw); } catch { return failure(502, '微信支付响应格式无效'); }
+    // EasyWeChat's toArray(false) retains PHP integer/float distinctions and
+    // decodes both JSON objects and lists as PHP arrays, including empty {}.
+    if (!record(result) && !Array.isArray(result)) return failure(502, '微信支付响应格式无效');
+    return result as Row;
   }
 
   async order(input: Row, fallbackNotifyUrl?: string): Promise<Row> {
@@ -242,6 +245,7 @@ export class Integrations {
       ...(typeof input.attach === 'string' ? { attach: input.attach } : {}),
       amount: { total: Number(input.amount), currency: 'CNY' }, payer: { openid: input.openid },
     });
+    if (result.prepay_id == null) return originalException(`获取prepay_id失败: ${phpJson(result)}`, 'Exception');
     if (typeof result.prepay_id !== 'string' || !result.prepay_id) return failure(502, '获取prepay_id失败');
     const timeStamp = String(this.now()), nonceStr = this.nonce(), packageValue = `prepay_id=${result.prepay_id}`;
     const paySign = sign('RSA-SHA256', Buffer.from(`${this.config.appId}\n${timeStamp}\n${nonceStr}\n${packageValue}\n`), this.config.privateKey!).toString('base64');

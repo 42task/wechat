@@ -4,7 +4,7 @@ import type { Database } from '../core/database';
 import { hasDecodedJson, markJsonDecoded } from '../core/json';
 import { ApiError } from '../core/errors';
 import { yiiObject } from '../core/serialization';
-import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpValuesEqual } from '../core/php';
+import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpTrim, phpValuesEqual } from '../core/php';
 import { paginationOrigin } from '../core/pagination';
 
 export const fail = (status: number, message: string): never => { throw new ApiError(status, message, undefined, status === 400 ? 'HttpException' : undefined); };
@@ -46,7 +46,7 @@ export class V1Models {
     return row!.currentTimestamp;
   }
   async player(row: Row): Promise<Row> { return copyPhpMetadata(row,{...row,role:(await this.manager(row.id))?.type ?? 'player'}); }
-  async serialize(table: string, row: Row, expand = '', fields = '', depth = 0): Promise<Row> {
+  async serialize(table: string, row: Row, expand = '', fields = '', depth = 0, loadedRelations: Row = {}): Promise<Row> {
     const result = copyPhpMetadata(row,{...row});
     if (!hasDecodedJson(row) && typeof result.game === 'string') { try { result.game=parsePhpJson(result.game); } catch {} }
     if (table === 'device') {
@@ -71,8 +71,14 @@ export class V1Models {
         }
         if (table === 'shop' && name === 'gifts') {
           const gifts=await this.db.query('SELECT gift.* FROM gift INNER JOIN award ON award.id = gift.award_id WHERE award.shop_id = ?',[row.id]);
-          value=await Promise.all(gifts.map(g => this.serialize('gift',g,nested,nestedFields,depth+1)));
+          // Shop::getGifts uses joinWith('award'), which eager-loads that
+          // relation. Only these Gift instances expose it as an extra field;
+          // inherited Gift REST reads have not loaded an award relation.
+          const awards=await this.db.query('SELECT * FROM award WHERE shop_id = ?',[row.id]);
+          const byId=new Map(awards.map(award=>[String(award.id),award]));
+          value=await Promise.all(gifts.map(g => this.serialize('gift',g,nested,nestedFields,depth+1,{award:byId.get(String(g.award_id)) ?? null})));
         }
+        if (table === 'gift' && name === 'award' && Object.hasOwn(loadedRelations,'award')) value=loadedRelations.award ? await this.serialize('award',loadedRelations.award,nested,nestedFields,depth+1) : null;
         if (value !== undefined) result[name]=value;
       }
     }
@@ -85,7 +91,7 @@ export class V1Models {
   }
   async save(table: string, body: Row, previous?: Row, validationPrefix?: string, modelResponse = false): Promise<Row> {
     const spec=definitions[table]; if (!spec) fail(404,'Not Found');
-    const input=normalizePhpJson(body);
+    const input=copyPhpMetadata(body,normalizePhpJson(body));
     const data=copyPhpMetadata(input,Object.fromEntries(Object.entries(input).filter(([key]) => spec.fields.includes(key))));
     const awardPrice=data.price === undefined ? previous?.price : data.price;
     if (table === 'award' && (awardPrice === undefined || awardPrice === null || awardPrice === '' || Array.isArray(awardPrice) && awardPrice.length === 0)) data.price=100;
@@ -96,27 +102,33 @@ export class V1Models {
     const empty=(value:any) => value === undefined || value === null || value === '' || Array.isArray(value) && value.length === 0;
     const required=[...spec.required ?? []];
     if (table === 'record' && (!previous || previous.device_id !== null)) required.push('device_id');
-    for (const field of required) if (empty(typeof merged[field] === 'string' ? merged[field].trim() : merged[field])) invalid(field,label(field)+' cannot be blank.');
-    for (const field of spec.numbers ?? []) if (!hasError(field) && data[field] !== undefined && data[field] !== null && data[field] !== '') {
-      if (Array.isArray(data[field]) && data[field].length === 0) data[field]=0;
-      if (!['number','string'].includes(typeof data[field]) || !/^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/.test(String(data[field])) || !Number.isFinite(Number(data[field]))) invalid(field,label(field)+' must be a number.'); else data[field]=Number(data[field]);
+    for (const field of required) if (empty(typeof merged[field] === 'string' ? phpTrim(merged[field]) : merged[field])) invalid(field,label(field)+' cannot be blank.');
+    // ActiveRecord::save validates the complete model, including unchanged
+    // attributes loaded from legacy rows. Only assigned values are cast for SQL.
+    for (const field of spec.numbers ?? []) if (!hasError(field) && merged[field] !== undefined && merged[field] !== null && merged[field] !== '') {
+      const value=Array.isArray(merged[field]) && merged[field].length === 0 ? 0 : merged[field];
+      const text=String(value), normalized=text.endsWith('\n') ? text.slice(0,-1) : text;
+      // PCRE $ accepts one final LF. It does not accept CR or Unicode line separators.
+      if (!['number','string'].includes(typeof value) || !/^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/.test(normalized) || !Number.isFinite(Number(value))) invalid(field,label(field)+' must be a number.'); else if (Object.hasOwn(data,field)) data[field]=Number(value);
     }
-    for (const field of spec.integers ?? []) if (!hasError(field) && data[field] !== undefined && data[field] !== null && data[field] !== '') {
+    for (const field of spec.integers ?? []) if (!hasError(field) && merged[field] !== undefined && merged[field] !== null && merged[field] !== '') {
       // Yii skips optional empty arrays during validation, then casts numeric columns to zero.
-      if (Array.isArray(data[field]) && data[field].length === 0) data[field]=0;
-      if (!phpIntegerValid(data[field],phpNumberType(data,field))) invalid(field,label(field)+' must be an integer.'); else data[field]=phpInt(data[field]);
+      const value=Array.isArray(merged[field]) && merged[field].length === 0 ? 0 : merged[field];
+      if (!phpIntegerValid(value,phpNumberType(merged,field))) invalid(field,label(field)+' must be an integer.'); else if (Object.hasOwn(data,field)) data[field]=phpInt(value);
     }
-    for (const field of spec.strings ?? []) if (!hasError(field) && data[field] != null) {
-      if (typeof data[field] !== 'string') invalid(field,label(field)+' must be a string.');
-      else if (field !== 'status' && field !== 'type' && [...data[field]].length > 255) invalid(field,label(field)+' should contain at most 255 characters.');
+    for (const field of spec.strings ?? []) if (!hasError(field) && merged[field] != null) {
+      if (typeof merged[field] !== 'string') invalid(field,label(field)+' must be a string.');
+      else if (field !== 'status' && field !== 'type' && [...merged[field]].length > 255) invalid(field,label(field)+' should contain at most 255 characters.');
     }
-    for (const field of spec.unique ?? []) if (!hasError(field) && !empty(data[field])) {
-      const existing=await this.where(table,field,data[field]); if (existing && existing.id !== previous?.id) invalid(field,label(field)+' "'+data[field]+'" has already been taken.');
+    for (const field of spec.unique ?? []) if (!hasError(field) && !empty(merged[field])) {
+      const existing=await this.where(table,field,merged[field]); if (existing && existing.id !== previous?.id) invalid(field,label(field)+' "'+merged[field]+'" has already been taken.');
     }
     for (const [field,target] of Object.entries(spec.foreign ?? {})) if (!hasError(field) && !empty(merged[field]) && !await this.find(target,merged[field])) invalid(field,label(field)+' is invalid.');
     if (table === 'award' && !hasError('shop_id') && !hasError('type') && !empty(merged.shop_id) && !empty(merged.type)) {
-      const existing=await this.db.one('SELECT * FROM award WHERE shop_id = ? AND type = ?',[merged.shop_id,merged.type]);
-      if (existing && existing.id !== previous?.id) invalid('shop_id',`The combination "${merged.shop_id}"-"${merged.type}" of Shop ID and Type has already been taken.`);
+      // There is no composite SQL unique constraint. Existing duplicate pairs
+      // must still fail validation when the first returned row is this model.
+      const existing=await this.db.one('SELECT * FROM award WHERE shop_id = ? AND type = ?'+(previous ? ' AND id <> ?' : ''),[merged.shop_id,merged.type,...previous ? [previous.id] : []]);
+      if (existing) invalid('shop_id',`The combination "${merged.shop_id}"-"${merged.type}" of Shop ID and Type has already been taken.`);
     }
     if (errors.length) {
       if (validationPrefix !== undefined) fail(400,validationPrefix+JSON.stringify(Object.fromEntries(errors.map(error => [error.field,[error.message]]))));

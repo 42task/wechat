@@ -39,8 +39,23 @@ jobs:
       V1_MYSQL_TEST_URL: mysql://root:wechat-local-test@127.0.0.1:3306/wechat_schema_test
       NODE_ENV: test
       JWT_SECRET: ci-test-key-only-not-for-deployment-32-bytes
+      YII2_SOURCE_ROOT: ${{ github.workspace }}/.oracle/game
+      YII_SOURCE_ROOT: ${{ github.workspace }}/.oracle/game
+      YII2_MIGRATIONS: ${{ github.workspace }}/.oracle/game/api/migrations
     steps:
       - uses: actions/checkout@v4
+      - name: Check out the frozen Yii oracle for tests only
+        uses: actions/checkout@v4
+        with:
+          repository: gdgeek/game
+          ref: 74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b
+          path: .oracle/game
+          persist-credentials: false
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, openssl, curl, pdo_mysql
+          coverage: none
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -49,8 +64,17 @@ jobs:
       - run: npm run build
       - run: npm run migrate -- --bootstrap
       - run: npm test
-      - run: npm run parity
+      - run: npm run parity -- --source-root .oracle/game
       - run: docker build -t wechat2:test .
+      - name: Verify retained public files in the production image
+        run: >-
+          docker run --rm --network none --entrypoint node wechat2:test -e
+          'const fs=require("node:fs"),crypto=require("node:crypto");
+          const root="/app/public-legacy",m=JSON.parse(fs.readFileSync(root+"/manifest.json","utf8"));
+          if(m.files.length!==5)throw Error("Unexpected public file manifest");
+          for(const f of m.files){const b=fs.readFileSync(root+f.path);
+          if(b.length!==f.bytes||crypto.createHash("sha256").update(b).digest("hex")!==f.sha256)throw Error("Public file mismatch");}
+          console.log("Five retained public files verified as the application user");'
       - name: Verify migration in the production image
         run: >-
           docker run --rm --network host

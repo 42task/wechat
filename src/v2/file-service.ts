@@ -1,6 +1,7 @@
 import type { Row } from '../core/contracts';
 import type { Database } from '../core/database';
 import { ApiError } from '../core/errors';
+import { parsePhpJson, phpNumberType, type PhpNumberType } from '../core/php';
 
 function integer(value: unknown): number | null {
   if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
@@ -9,7 +10,14 @@ function integer(value: unknown): number | null {
   const parsed = match ? Number(match[1]) : NaN;
   return Number.isSafeInteger(parsed) ? parsed === 0 ? 0 : parsed : null;
 }
-export function priceInCents(value: unknown): number | null {
+function strictInteger(container: Row, field: string, expected: number): boolean {
+  return typeof container[field] === 'number' && phpNumberType(container, field) !== 'double' && container[field] === expected;
+}
+export function priceInCents(value: unknown, numberType?: PhpNumberType): number | null {
+  // Yii priceInCents rejects PHP floats, even a JSON lexeme such as 250.0.
+  // Omitted metadata deliberately preserves recordingPriceInCents semantics
+  // for setup.money's whole-valued SQL FLOAT, used by the recording path.
+  if (typeof value === 'number' && numberType === 'double') return null;
   const price = integer(value);
   return price !== null && price >= 0 && price <= 2147483647 ? price : null;
 }
@@ -29,18 +37,18 @@ export class MiniProgramFileService {
     if (!file) throw new ApiError(404, '文件不存在或不属于当前账号', undefined, 'HttpException');
     return file;
   }
-  prepareOrder(file: Row, user: Row, requestedAmount: unknown = null, requestedOpenid: unknown = null): { amount: number; openid: string; attach: string } {
-    const price = priceInCents(file.price);
+  prepareOrder(file: Row, user: Row, requestedAmount: unknown = null, requestedOpenid: unknown = null, requestedAmountType?: PhpNumberType): { amount: number; openid: string; attach: string } {
+    const price = priceInCents(file.price, phpNumberType(file, 'price'));
     if (price === null) throw new ApiError(422, '该历史文件尚未确认收费金额，请联系管理员', undefined, 'HttpException');
     if (price === 0 || file.unlocked && file.unlocked !== '0') throw new ApiError(409, '该文件无需重复支付，请刷新文件状态', undefined, 'HttpException');
-    if (requestedAmount !== null && priceInCents(requestedAmount) !== price) throw new ApiError(400, '文件金额已更新，请刷新后重试', undefined, 'HttpException');
+    if (requestedAmount !== null && priceInCents(requestedAmount, requestedAmountType) !== price) throw new ApiError(400, '文件金额已更新，请刷新后重试', undefined, 'HttpException');
     if (typeof user.openid !== 'string' || user.openid === '' || requestedOpenid !== null && requestedOpenid !== user.openid) throw new ApiError(400, '付款账号与当前登录账号不一致', undefined, 'HttpException');
     return { amount: price, openid: user.openid, attach: JSON.stringify({ v: 1, file_id: Number(file.id), user_id: Number(user.id), amount: price }) };
   }
   /** The primary key arbitrates concurrent attempts; an existing binding is immutable. */
-  async reserveOrder(orderNo: string, file: Row, user: Row, requestedAmount: unknown = null, requestedOpenid: unknown = null): Promise<{ amount: number; openid: string; attach: string }> {
+  async reserveOrder(orderNo: string, file: Row, user: Row, requestedAmount: unknown = null, requestedOpenid: unknown = null, requestedAmountType?: PhpNumberType): Promise<{ amount: number; openid: string; attach: string }> {
     this.validateOrderNumber(orderNo);
-    const prepared = this.prepareOrder(file, user, requestedAmount, requestedOpenid);
+    const prepared = this.prepareOrder(file, user, requestedAmount, requestedOpenid, requestedAmountType);
     await this.findOwned(file.id, user);
     try {
       const createdAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -80,10 +88,10 @@ export class MiniProgramFileService {
     if (['NOTPAY', 'CLOSED', 'REVOKED', 'USERPAYING', 'PAYERROR', 'REFUND'].includes(order.trade_state)) return false;
     if (order.trade_state !== 'SUCCESS') throw new ApiError(403, '订单支付状态无效', undefined, 'HttpException');
     let attachment: Row | null = null;
-    try { attachment = typeof order.attach === 'string' ? JSON.parse(order.attach) : null; } catch { /* Invalid provider attachment is rejected below. */ }
-    if (!attachment || Array.isArray(attachment) || attachment.v !== 1 || attachment.user_id !== Number(user.id) || attachment.file_id !== Number(binding.file_id) || attachment.amount !== Number(binding.amount)) throw new ApiError(403, '订单不属于当前文件账号', undefined, 'HttpException');
-    const file = await this.findOwned(binding.file_id, user), price = priceInCents(file.price);
-    if (order.payer?.openid !== user.openid || price === null || price === 0 || attachment.amount !== price || order.amount?.total !== price || order.amount?.currency !== 'CNY') throw new ApiError(403, '订单金额、收款方或付款账号校验失败', undefined, 'HttpException');
+    try { attachment = typeof order.attach === 'string' ? parsePhpJson(order.attach) : null; } catch { /* Invalid provider attachment is rejected below. */ }
+    if (!attachment || Array.isArray(attachment) || !strictInteger(attachment, 'v', 1) || !strictInteger(attachment, 'user_id', Number(user.id)) || !strictInteger(attachment, 'file_id', Number(binding.file_id)) || !strictInteger(attachment, 'amount', Number(binding.amount))) throw new ApiError(403, '订单不属于当前文件账号', undefined, 'HttpException');
+    const file = await this.findOwned(binding.file_id, user), price = priceInCents(file.price, phpNumberType(file, 'price'));
+    if (order.payer?.openid !== user.openid || price === null || price === 0 || attachment.amount !== price || !order.amount || !strictInteger(order.amount, 'total', price) || order.amount?.currency !== 'CNY') throw new ApiError(403, '订单金额、收款方或付款账号校验失败', undefined, 'HttpException');
     await this.db.execute('UPDATE file SET unlocked=1 WHERE id=?', [file.id]);
     return true;
   }

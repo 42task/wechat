@@ -13,6 +13,7 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/dist-tools ./dist-tools
+COPY --chown=node:node public-legacy ./public-legacy
 COPY --chown=node:node database ./dist-tools/database
 COPY --chown=node:node package.json ./
 ARG GIT_COMMIT

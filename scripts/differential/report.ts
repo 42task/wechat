@@ -65,6 +65,27 @@ function currentBusinessSourceChanges(repository: string, path: string): string[
   return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean) : ['无法读取 Git 状态'];
 }
 
+/** Project only approved status metadata; never embed online rows or env/key values. */
+function onlineAcceptance(): ObjectRow {
+  const onlineDirectory = resolve('runtime/online-acceptance');
+  const read = (name: string): ObjectRow => {
+    try { return JSON.parse(readFileSync(resolve(onlineDirectory, name), 'utf8')); }
+    catch { return { unavailable: true }; }
+  };
+  const deployed = read('candidate-d829.json'), deployment = read('deployment.json');
+  const parity = read('round-d829-a1.json'), provider = read('provider-probe-a1.json');
+  const mapping = read('environment-mapping.json');
+  const paymentChecks = ['miniAppConfigured', 'merchantConfigured', 'apiV3KeyLengthValid', 'signingKeyReadable', 'signingRoundTrip', 'platformKeysReadable', 'merchantCertificatePresent', 'merchantCertificateMatchesPrivate', 'merchantCertificateCurrent', 'merchantSerialMatchesCertificate', 'appInitialization', 'available'];
+  return {
+    evidenceScope: '较早 d829 候选的有限线上验收，不能代替当前未提交代码的部署与复核。',
+    deployedCandidate: { commit: deployed.commit ?? null, digest: deployed.digest ?? null, ciVerify: deployed.verify ?? null, ciPublish: deployed.publish ?? null, tests: deployed.localMySqlTests ?? null, createdAtShanghai: deployment.currentCandidate?.createdAtShanghai ?? null },
+    deploymentScope: { nodeContainerOnly: deployment.deployment?.target === 'wechat2 business container only', stackRedeploy: deployment.deployment?.stackRedeploy ?? null, databaseMigrations: deployment.deployment?.databaseMigrations ?? null, yiiChanges: deployment.deployment?.yiiChanges ?? null, b1NodeChanged: deployment.deployment?.b1NodeChanged ?? null },
+    parity: { runId: parity.runId ?? null, applicationCommit: parity.applicationCommit ?? null, completed: parity.completed === true, passed: parity.passed ?? null, total: parity.total ?? null, restored: parity.restored === true, sqlRowsRemoved: parity.cleanup?.sqlRowsRemoved ?? null, redisHashesRemoved: parity.cleanup?.redisHashesRemoved ?? null, sqlVerified: parity.cleanup?.sqlVerified === true, redisVerified: parity.cleanup?.redisVerified === true },
+    providerProbe: { runId: provider.runId ?? null, mode: provider.mode ?? null, completed: provider.completed === true, passed: provider.passed ?? null, total: provider.total ?? null, cosWritesStarted: provider.cosWritesStarted ?? null, paymentConfiguration: Object.fromEntries(paymentChecks.map(key => [key, typeof provider.paymentConfiguration?.[key] === 'boolean' ? provider.paymentConfiguration[key] : null])), scope: '实际短效 STS 签发和缺失对象 HEAD；不含支付、退款、对象写入或硬件。' },
+    environmentMapping: { businessMappingsCompared: mapping.coreMappingsCompared ?? null, businessValuesEqual: mapping.coreValuesEqual === true, keyFilesCompared: mapping.keyFileContentChecks ?? null, keyFileContentsEqual: mapping.keyFileContentMatches === mapping.keyFileContentChecks && mapping.keyFileContentChecks === 6, keyFilesReadableOnBothSides: mapping.keyFilesReadableOnBothSides === true, nodeDeviceDevAuth: mapping.nodeDeviceDevAuth ?? null, yiiEnvironment: mapping.yiiEnvConstant ?? null, valuesOrKeyFingerprintsExported: mapping.environmentValuesExported === true || mapping.keyFingerprintsExported === true, changedDeployedEnvironment: mapping.changedDeployedEnvironment === true },
+  };
+}
+
 function readEvidence(): { evidence: Record<string, any>; errors: ObjectRow[] } {
   const evidence: Record<string, any> = {}, errors: ObjectRow[] = [];
   for (const [name] of sources) {
@@ -136,11 +157,12 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
   const remaining = cases.filter(row => !row.equal);
   const diagnosticAdaptations = remaining.filter(row => row.suite === 'authenticated' && row.id === 'GET /v1/local/test');
   const unexplained = remaining.filter(row => !diagnosticAdaptations.includes(row));
-  let baseline: ObjectRow | undefined, remote: ObjectRow | undefined, candidate: ObjectRow | undefined, image: ObjectRow | undefined, dependencyAudit: ObjectRow | undefined;
+  let baseline: ObjectRow | undefined, remote: ObjectRow | undefined, candidate: ObjectRow | undefined, image: ObjectRow | undefined, logicImage: ObjectRow | undefined, dependencyAudit: ObjectRow | undefined;
   try { baseline = sanitize(JSON.parse(readFileSync(resolve(directory, 'baseline-20261112/summary.json'), 'utf8'))); } catch {}
   try { remote = sanitize(JSON.parse(readFileSync(resolve(directory, 'remote-environment.json'), 'utf8'))); } catch {}
   try { candidate = sanitize(JSON.parse(readFileSync(resolve(directory, 'candidate-source.json'), 'utf8'))); } catch {}
   try { image = sanitize(JSON.parse(readFileSync(resolve(directory, 'image-validation.json'), 'utf8'))); } catch {}
+  try { logicImage = sanitize(JSON.parse(readFileSync(resolve(directory, 'logic-image-validation.json'), 'utf8'))); } catch {}
   try { dependencyAudit = sanitize(JSON.parse(readFileSync(resolve(directory, 'dependency-audit.json'), 'utf8'))); } catch {}
   const isDifferent = (suite: string, id: string) => cases.some(row => row.suite === suite && row.id === id && !row.equal);
   const findings = [
@@ -168,14 +190,19 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
   ];
   return {
     generatedAt: new Date().toISOString(), conclusion: unexplained.length || errors.length || !node.success
-      ? `当前仍有 ${unexplained.length} 组未解释差异，尚不能确认可替换；本地修复与真实环境验收均须通过。`
-      : `本轮本地业务对照已对齐，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异。真实微信、支付、COS 和设备验收尚未完成，暂不建议切换。`, database: 'MySQL 8.4.9',
-    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '服务仅绑定 loopback；MySQL、Redis 使用独立测试容器与数据库。复用运行材料位于忽略的 runtime 目录；远端服务和数据未改动。' },
-    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持原始 Yii 业务实现作为对照；wechat 在 codex/yii-node-parity-20261112 分支进行兼容性修复。HEAD 表示比较基线，当前未提交的修改见 Git 状态。未部署、未切流。' },
+      ? `当前本地复核仍有 ${unexplained.length} 组未解释差异、${errors.length} 项缺失证据或测试未通过，逻辑等价复核尚未完成；尚不能确认本轮代码可替换。`
+      : `本轮本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列明确边界。当前代码尚未部署；按用户决定，真实微信、支付、COS 和硬件联调延期，完成候选发布、设备认证配置对齐及入口/回滚核对后再执行已授权切换。`, database: 'MySQL 8.4.9',
+    phase: '先完成代码与逻辑对应，再按授权切换；真实外部联调延期，不作为本阶段新增门槛。',
+    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用独立 MySQL/Redis 容器与数据库；其执行不访问线上。较早线上 d829 候选部署及有限验收另列，不与本轮未提交代码混合。' },
+    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；本轮在 codex/online-acceptance-20261112 修复。wechat HEAD 是生成报告时的提交，未提交修改另列于 Git 状态；发布须锁定实际构建 SHA。线上 b0 仍运行较早 d829 候选，Yii 与 b1 Node 未变，业务入口尚未切换。' },
     baseline: baseline?.comparison ?? { total: 797, matched: 676, differences: 121, note: '初始比较归档在 baseline-20261112；修复期间新增边界用例，两轮分母不同。' },
     remote: remote ?? { unavailable: true },
     candidate: candidate ?? { unavailable: true },
     productionImage: image ?? { unavailable: true },
+    productionImageScope: '较早本地镜像验证归档，不是本轮未提交工作树的发布证据。',
+    logicCandidateImage: logicImage ?? { unavailable: true },
+    candidateSnapshotScope: '较早文件内容快照；当前工作树修改及新候选 SHA 需发布时重新锁定。',
+    onlineAcceptance: onlineAcceptance(),
     dependencyAudit: { counts: dependencyAudit?.metadata?.vulnerabilities ?? null, note: '审计报告两条 high，来自同一 multer 2.4.0 公告及其 Nest 依赖链；本轮源码未注册 multer 或 multipart 文件上传中间件。此次未升级依赖，详情见 dependency-audit.json。' },
     documentedAdaptations: diagnosticAdaptations.map(row => ({ suite: row.suite, id: row.id, reason: '保留原有诊断凭据脱敏；Yii 回显 Bearer，Node 返回 [redacted]。未将此项改成一致，也未恢复凭据回显。' })),
     routeInventory: inventory ?? { unavailable: true },
@@ -192,12 +219,15 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
     },
     boundaries: [
       `${suiteCount('anonymous')?.total ?? '待生成'} 个匿名与 ${suiteCount('authenticated')?.total ?? '待生成'} 个认证用例主要核对路由解析、方法、鉴权和前置错误；不是每条接口的有效成功输入、全部字段与完整副作用验证。`,
-      '未使用真实微信、商户或 COS 凭据；未执行真实付款、退款和上传验收。微信与支付对照使用原 PHP SDK 和双方模拟传输；STS 对照保留原 SDK 签名、策略、反序列化，另对主 HTTP 的内部构造传输注入相同固定响应。这些不能证明真实供应商配置与业务验收通过。',
+      '本地主对照使用合成密码材料与替身传输。较早线上供应商探测已使用现有配置完成支付材料布尔检查、实际短效 STS 签发及缺失对象 HEAD；真实微信登录/手机号、付款/退款/回调、COS PUT/GET/DELETE 和实体设备仍未执行，已按用户决定延期。',
       'Y1 场景使用本地 HTTPS 替身；并非真实 Y1 部署或网络验收。场景套件结果始终取最后一次已生成 JSON，不沿用早期证书信任配置错误。',
       '按用户要求，以现有 Yii 为兼容合同，不新增业务规则。旧入口的公开错误和保存副作用亦参与对照；诊断内容中的凭据保持脱敏，涉及扩大云存储权限的差异须单独评估。',
       '生成时钟、随机凭据、等义 Link token 引号及私有 PHP 文件路径/堆栈只按脚本中显式规则归一化；错误状态、公开消息与类型、业务余额、SQL/Redis 副作用和字段缺失继续作为证据。',
-      '已只读确认浏览器登录的 Portainer；远端 Yii 和原版本 Node 共用 MySQL 数据库及 Redis，尚未部署本地候选版本，未在共享数据上运行写入差分。',
-      '用户已确认远端是实际运行环境。未更新 Stack、未执行远端迁移或写入；生产切换前须先准备隔离验收环境。诊断脱敏的已知差异保持在主表中，因此严格差分命令以 exit 1 结束，不能把它报告为零差异通过。',
+      'b0 未使用的 Node 容器已单独部署较早 d829 候选，其专属 fixture 在线24/24，10条SQL行与6个Redis hash清理并复核；没有迁移、整栈重部署或切换业务入口。本轮新增逻辑修复尚未部署，不能继承该候选的线上验收结果。',
+      '已核对22项业务环境映射及6个密钥文件内容一致，未导出环境值、密钥或指纹。线上 Yii ENV=dev，而Node GAME_DEV_AUTH=0；切换前须明确对齐设备time/hash兼容配置。MySQL连接charset也须按源utf8配置。',
+      '保留的实现边界包括诊断Bearer脱敏、Y1旧forward关闭TLS校验而Node继续验证、部分设备建档等错误分支的更强事务回滚，以及扫码限流Yii FileCache与Node SQL存储不共享。它们不被改写成严格零差异。',
+      '业务ID/scene_id按现有INT32数据库域验证。PHP64整数超出JavaScript安全整数范围时，原始数值及JSON输出精度仍有边界；不能据本报告声称任意PHP64输入逐字节等价。',
+      '诊断脱敏的已知差异保持在主表中，因此严格差分命令仍可为exit 1；用户已授权逻辑对应后切换，真实外部联调延期。候选发布、当前部署配置及入口/回滚核对是另一步骤，本报告本身不执行切换。',
     ], findings, readErrors: errors,
     reproduction: [
       "cd '/Users/dirui/Documents/ChatGPT/打卡机/wechat'",
@@ -240,7 +270,7 @@ const metrics = [
   ['Node 自动测试', String(summary.tests.node.passed ?? '—') + ' / ' + String(summary.tests.node.total ?? '—'), '通过原测试不等于跨实现一致', summary.tests.node.success ? 'good' : 'bad'],
   ['主对照用例组', summary.comparison.matched + ' / ' + summary.comparison.total, summary.comparison.differences + ' 组仍有差异 · 非业务成功率', summary.comparison.differences ? 'bad' : 'good'],
   ['路由结构清单', summary.routeInventory.resolvable ?? '—', (summary.routeInventory.declaredMethodPaths ?? '—') + ' 项声明 · ' + (summary.routeInventory.businessAndRest ?? '—') + ' 项业务 / REST', 'neutral'],
-  ['原 P1 问题未对齐', summary.findings.filter(item => item.priority === 'P1' && item.confirmed).length, '本地对照结果 · 仍需真实环境验收', summary.findings.some(item => item.priority === 'P1' && item.confirmed) ? 'bad' : 'good'],
+  ['原 P1 问题未对齐', summary.findings.filter(item => item.priority === 'P1' && item.confirmed).length, '本地代码复核 · 外部联调已延期', summary.findings.some(item => item.priority === 'P1' && item.confirmed) ? 'bad' : 'good'],
 ];
 for (const metric of metrics) {
   const card = element('article', undefined, 'metric ' + metric[3]);
@@ -278,8 +308,8 @@ const interop = summary.tests.businessHs256;
 $('interop-note').textContent = '管理 ES256 跨实现：' + (admin.tested ? admin.accepted ? '已通过' : '有差异' : '尚无报告') + '。业务 HS256：Yii → Node 立即 ' + interop.yiiToNode.immediateAccepted + '/' + interop.yiiToNode.attempts + ' 接受，401 为 ' + interop.yiiToNode.immediate401 + ' 次，延迟后 ' + interop.yiiToNode.delayedAccepted + ' 次接受；Node → Yii 立即 ' + interop.nodeToYii.immediateAccepted + '/' + interop.nodeToYii.attempts + ' 接受。';
 $('source-heads').textContent = 'game: ' + summary.source.gameHead + '\nwechat: ' + summary.source.wechatHead + '\n' + summary.source.note + '\n业务源码 Git 状态：' + (summary.source.gameBusinessChanges.length || summary.source.nodeBusinessChanges.length ? '存在变动，请检查 summary.json' : '未改动');
 $('environment').textContent = summary.database + ' · @@time_zone=' + summary.environment.mysqlSessionTimeZone + ' · system_time_zone=' + summary.environment.mysqlSystemTimeZone + ' · 两端连接 charset=' + summary.environment.connectionCharset + '\nYii ENV=' + summary.environment.yiiEnvironment + ' / DEBUG=' + summary.environment.phpDebug + '\nY1: ' + summary.environment.y1Fixture + '\n' + summary.environment.certificateTrust + '\n' + summary.environment.excludedRuns + '\n' + summary.environment.lifecycle;
-$('candidate').textContent = JSON.stringify({ sourceSnapshot: summary.candidate, localProductionImage: summary.productionImage }, null, 2);
-$('remote').textContent = JSON.stringify(summary.remote, null, 2);
+$('candidate').textContent = JSON.stringify({ currentLocalLogicImage: summary.logicCandidateImage, earlierSourceSnapshot: summary.candidate, snapshotScope: summary.candidateSnapshotScope, earlierLocalProductionImage: summary.productionImage, earlierImageScope: summary.productionImageScope }, null, 2);
+$('remote').textContent = JSON.stringify({ onlineAcceptance: summary.onlineAcceptance, earlierReadOnlySnapshot: summary.remote }, null, 2);
 $('dependency-audit').textContent = summary.dependencyAudit.note;
 $('commands').textContent = summary.reproduction.join('\n');
 $('reproduction-note').textContent = summary.reproductionNote;
@@ -356,7 +386,7 @@ function html(summary: ObjectRow, cases: ComparisonCase[]): string {
 <section class="section"><h2>已复现差异与优先级</h2><div id="findings" class="findings"></div></section>
 <section class="section"><h2>本轮执行结果</h2><div class="table-wrap"><table><thead><tr><th>证据套件</th><th>用例组</th><th>一致</th><th>不同</th><th>测试工具错误</th><th>最后生成时间（上海）</th></tr></thead><tbody id="suite-rows"></tbody></table></div><p id="yii-note" class="muted"></p><p id="interop-note" class="muted"></p></section>
 <section class="section"><h2>逐项对照证据</h2><p class="muted">默认只显示不同项。展开可查看 Yii 与 Node 的响应、SQL / Redis 状态；凭据和字面令牌已脱敏。搜索支持用例名、路径及差异字段。</p><div class="toolbar"><label>搜索用例或差异字段<input id="search" type="search" placeholder="例如 points、cache-control、updated_at" autocomplete="off"></label><label>对照结果<select id="status"><option value="different" selected>只看不同</option><option value="all">全部用例</option><option value="matched">只看一致</option></select></label><label>证据套件<select id="suite"><option value="">全部套件</option></select></label></div><div class="pager"><span id="filter-count" class="muted" aria-live="polite"></span><button id="previous" type="button">上一页</button><button id="next" type="button">下一页</button></div><div id="cases"></div></section>
-<section class="section"><h2>候选镜像与远端只读检查</h2><pre id="candidate"></pre><pre id="remote"></pre><p id="dependency-audit" class="muted"></p></section>
+<section class="section"><h2>当前本地代码与较早线上候选</h2><pre id="candidate"></pre><pre id="remote"></pre><p id="dependency-audit" class="muted"></p></section>
 <section class="section"><h2>比较基线与复现</h2><pre id="source-heads"></pre><pre id="environment"></pre><pre id="commands"></pre><p id="reproduction-note" class="muted"></p></section>
 <footer>这是可离线打开的单文件报告，不加载外部脚本、字体或服务。原始证据以生成时快照嵌入；重新执行报告生成器即可读取最新 JSON。</footer>
 </main><script id="report-data" type="application/json">${payload}</script><script>${clientScript}</script></body></html>`;

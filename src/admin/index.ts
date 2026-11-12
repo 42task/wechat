@@ -7,6 +7,7 @@ import { AdminAuth } from './auth';
 import { AdminTokens } from './tokens';
 import { AdminTokenStore } from './token-store';
 import { AdminImagePreviews } from './image-previews';
+import { copyPhpMetadata, phpInt } from '../core/php';
 
 export function registerAdmin(router: ApiRouter, s: Services): void {
   const tokens = new AdminTokens(new AdminTokenStore(s.adminAuthRedis ?? s.redis));
@@ -19,11 +20,11 @@ export function registerAdmin(router: ApiRouter, s: Services): void {
   route('POST', '/admin-api/refresh', ctx => auth.refresh(ctx.body.refreshToken));
   route('POST', '/admin-api/logout', ctx => auth.logout(ctx, () => tickets.cancelCurrent(ctx)));
   route('GET', '/admin-api/devices', async ctx => { await requireUser(ctx); return devices.list(await auth.scope(ctx)); });
-  route('GET', '/admin-api/devices/:id/image-previews', async ctx => { await requireUser(ctx); return { previews: await previews.get(Number(ctx.params.id), await auth.scope(ctx)) }; });
-  route('DELETE', '/admin-api/devices/:id', async ctx => { await requireUser(ctx); return devices.deleteDevice(Number(ctx.params.id), await auth.scope(ctx)); });
+  route('GET', '/admin-api/devices/:id/image-previews', async ctx => { await requireUser(ctx); return { previews: await previews.get(phpInt(ctx.params.id), await auth.scope(ctx)) }; });
+  route('DELETE', '/admin-api/devices/:id', async ctx => { await requireUser(ctx); return devices.deleteDevice(phpInt(ctx.params.id), await auth.scope(ctx)); });
   route('GET', '/admin-api/games', async ctx => { await requireUser(ctx); return s.catalog.getGames(); });
-  route('PUT', '/admin-api/devices/:id/game', async ctx => { await requireUser(ctx); return devices.update(Number(ctx.params.id), { gameId: ctx.body.gameId }, await auth.scope(ctx)); });
-  route('PUT', '/admin-api/devices/:id/configuration', async ctx => { await requireUser(ctx); return devices.update(Number(ctx.params.id), ctx.body, await auth.scope(ctx)); });
+  route('PUT', '/admin-api/devices/:id/game', async ctx => { await requireUser(ctx); const body = ctx.body; return devices.update(phpInt(ctx.params.id), copyPhpMetadata(body, { gameId: body.gameId }), await auth.scope(ctx)); });
+  route('PUT', '/admin-api/devices/:id/configuration', async ctx => { await requireUser(ctx); return devices.update(phpInt(ctx.params.id), ctx.body, await auth.scope(ctx)); });
   route('POST', '/admin-api/scan-login/tickets', ctx => tickets.create(ctx));
   route('GET', '/admin-api/scan-login/tickets/:id', ctx => tickets.status(ctx));
   route('POST', '/admin-api/scan-login/tickets/:id/cancel', ctx => tickets.cancel(ctx));

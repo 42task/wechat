@@ -1,33 +1,54 @@
 # 验证记录（2026-11-12）
 
-本轮以未修改的 `game@74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b` 为合同，在 `codex/yii-node-parity-20261112` 分支修复 Node。仅使用 **MySQL 8.4.9 + Redis 7.4**；本地测试 Compose 与 CI 已改为 MySQL。没有新增业务功能，没有推送、发布镜像或更新线上 Stack。
+本轮以未修改的 `game@74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b` 为 Yii 合同，工作分支为 `codex/online-acceptance-20261112`。候选按固定 SHA 发布；本轮新增逻辑修复尚未部署，线上仍是较早 d829 候选。具体构建 SHA 与部署状态以 CI 和健康接口为准。当前本机与 CI 仅使用 **MySQL 8.4 + Redis 7.4**（本机实测 MySQL 8.4.9），没有新增业务功能或更换线上数据库。
 
-| 检查 | 本轮结果 |
+用户已明确调整顺序：**先完成代码和逻辑对应，确认后执行后端切换；真实微信、支付、COS 和设备联调延期。** 外部联调未完成不再作为本阶段新增门槛，也不会被写成已完成。当前结论是所列本地逻辑对照与回归已完成；候选发布、设备认证配置与入口/回滚核对尚待完成，不能把本页当作已切换或替换完成的证明。
+
+| 当前工作树的本地检查 | 最新已完成结果 / 状态 |
 | --- | --- |
-| Node 全部测试，真实隔离 MySQL/Redis | **1,024 / 1,024**，0 失败、0 跳过 |
-| 实际 Yii / 编译版 Node HTTP 与业务差分 | **834 / 835**，0 工具错误；唯一差异是既有诊断凭据脱敏 |
+| 全量测试，真实隔离 MySQL/Redis | **1,257 / 1,257**，0 失败、0 跳过 |
+| Yii / 编译版 Node 严格 HTTP 与业务差分 | **882 / 883**，0 工具错误；仅保留诊断 Bearer 脱敏，未解释差异为 0 |
 | 匿名路由与前置响应 | 495 / 495 |
 | 携带身份路由与前置响应 | 183 / 184，保留 `GET /v1/local/test` 的 Bearer 脱敏差异 |
-| 管理端有效流程和边界 | 35 / 35 |
-| v1 游戏、积分与账务副作用 | 65 / 65 |
-| v2 设备、配置、文件、状态副作用 | 51 / 51 |
+| 管理端有效流程和边界 | 51 / 51 |
+| v1 游戏、积分与账务副作用 | 96 / 96 |
+| v2 设备、配置、文件、状态副作用 | **52 / 52**，包含非有限数字编码错误及其 SQL 状态 |
 | 本地 HTTPS Y1 替身 | 5 / 5 |
-| 业务 JWT 真实双向签发并立即接受 | Yii → Node 5 / 5；Node → Yii 5 / 5；另有未来/过期负例 |
+| 原 PHP 微信/支付 SDK 与 Node 供应商合同 | **75 / 75**，合成密码材料与替身传输；不是实际交易 |
+| 本地 JWT 实际双向签发并立即接受 | Yii → Node 5 / 5；Node → Yii 5 / 5；另有未来/过期负例 |
 | 支付损坏配置不阻断非支付应用 | 4 / 4 |
-| 原 PHP 微信/支付 SDK 与 Node 供应商合同 | 42 / 42，使用合成密码材料与替身传输 |
-| 原 Tencent SDK 与 Node STS 请求、策略及响应 | 9 / 9，无真实凭据或外网授权请求 |
+| 原 Tencent SDK 与 Node STS 请求、策略及响应 | 9 / 9，本地替身传输，无外网授权请求 |
 | PHP 浮点格式、整数校验与 SQL typecast | 172 / 172，原 PHP/Yii 函数 oracle |
-| 当前源路由与新鲜度 | 250 / 250 可解析项、239 条源 404 保留，212 个 PHP 文件核对通过 |
-| TypeScript / 本地生产 Docker 镜像 | 通过；uid=1000，包含编译迁移与源 OpenAPI，无开发依赖/私钥目录 |
-| 镜像内空库迁移、重复迁移、实际启动 | 均通过；健康接口 200，MySQL/Redis up；坏支付私钥不阻断健康检查 |
+| 本地参考源路由与新鲜度 | 250 / 250 可解析项、239 条源 404 保留，212 个 PHP 文件核对通过 |
+| 当前本地逻辑候选镜像 | 健康接口 healthy；MySQL/Redis up，uid=1000；5 个原始公开文件的实际 HTTP 字节/hash 核对通过，专属容器已移除；最后修正后待重建 |
 
-修复涵盖 JWT 小数时间、支付配置懒加载、PHP 请求/JSON 类型、fields/分页、缓存头、SQL 时钟和 clean-update 行为。账务特别保留 Yii 的运算顺序、模型整数校验、SQL 截断、失败前副作用及保存后内存响应，不新增 422 规则来替代旧行为。微信/支付/STS 的事件门控和公开错误也按当前源实现对照。
+本轮新增修复包括管理配置的整数/小数词法、重复保存不更新时间、PHP 名称和内容归一；Redis 只保存 dirty 字段，避免并发状态覆盖，并保留新建记录的重复列表成员、数值主键计数及序列化错误前副作用；补齐原始域名校验文件、robots、favicon 和 CSS 的固定路径。另核对微信 profile 的 JSON 数值类型、支付/退款金额和通知错误，以及场景目录的 PHP 整数过滤、空白与错误 JSON 缓存。账务继续按源的运算顺序、模型校验、SQL 截断、失败前副作用和保存后内存响应对照，没有新增业务规则。
 
-严格差分命令因诊断脱敏这一项保留差异而返回 **exit 1**，结果没有被改成零差异。源会回显 Bearer，Node 保留 `[redacted]`；该差异与所有原始对照均在报告中可查。PHP 私有文件路径/堆栈、生成时钟、随机凭据和等义 Link 引号按脚本的显式规则处理，公开状态/消息/类型、字段缺失与 SQL/Redis 余额仍参与比较。
+严格差分中的诊断脱敏差异没有被归一化消掉：源会回显 Bearer，Node 保留 `[redacted]`，因此严格命令仍可返回 **exit 1**。PHP 私有路径/堆栈、生成时钟、随机凭据和等义 Link 引号只按脚本的显式规则处理；公开状态/消息/类型、字段缺失与 SQL/Redis 状态继续参与比较。最终组数和未解释差异以全部套件完成后重新生成的 `runtime/parity-validation/summary.json` 为准。
 
-**当前结论：本地候选修复已验证，尚不建议线上替换。** 用户浏览器中的 Portainer 是实际运行环境；Yii 与原版本 Node 共用 MySQL 和 Redis，Node 仍为 `959a1f91fffd3a49e5458ce5dc90c44bc3b15b3d`。本轮仅只读确认远端，没有迁移、改配置、切流或写入测试数据。真实微信登录、支付/退款通知、COS 上传权限、Y1 与设备验收须在隔离环境完成。
+保留的实现和验证边界：
 
-主报告为 `runtime/parity-validation/report.html`，原始结果和 JSON 汇总保存在同目录；原始修复前结果在 `baseline-20261112`。目录被 Git 忽略，包含的本地配置/密钥不能提交。报告生成器仅嵌入白名单脱敏证据，不读取本地密钥或 context。初始 797 组中 121 组不同；本轮新增了边界用例，两轮分母不同。
+- Y1 的旧 `forwardCheckinRequest` 关闭了 TLS peer 校验，Node 保持证书验证；不会为了错误证书行为一致而关闭校验。本地主表使用 HTTPS 替身，不能代替真实 Y1 网络验收。
+- 部分设备建档等错误分支采用更强的事务回滚，避免留下半成品；不把这些保护写成任意故障下的逐条写入完全等价。
+- 扫码 create/approve 限流在 Yii 使用 FileCache，Node 使用 SQL；混合节点间计数不共享。管理令牌、刷新 CAS、密码限流和 owner 锁沿用共享 Redis 格式。
+- 业务 ID 和 `scene_id` 按现有 INT32 数据库域验证。超出 JavaScript 安全整数范围的 PHP64 原始数字与 JSON 输出仍有精度边界，不能据此宣称任意 PHP64 输入逐字节等价。
+- 现有线上 Yii 的 `YII_ENV=dev` 会跳过设备 refresh 的 time/hash 校验，Node 当前 `GAME_DEV_AUTH=0`；该环境策略差异须在切换前明确对齐。MySQL 连接字符集也须按源 `utf8` 配置，不随数据库迁移改变数据。
+
+以下线上证据属于**较早的 d829 候选**，不能代替本轮工作树代码的验收。提交 `d8294e95aa29d3aefa729107a1dd2f3b63d0d823` 已通过 [应用 CI 43226455851](https://github.com/42task/wechat/actions/runs/43226455851) 的 verify、publish 和 1,029 项测试。2026-11-12 **21:35:04（Asia/Shanghai）**仅替换 b0 尚未使用的 Node 容器，容器 ID 前缀 `6a8dd5`，固定镜像摘要前缀 `49de7bc`。Yii 源码版本（前缀 `64901c9`）、容器（ID 前缀 `cae4a0`）未变，b1 Node 仍为 `959a1f91fffd3a49e5458ce5dc90c44bc3b15b3d`；未整体重部署 Stack、未执行迁移、未切换业务入口。
+
+| 较早 d829 候选的线上范围 | 结果 |
+| --- | --- |
+| b0 专属新 fixture 对照 | **24 / 24**，`completed=true`、`restored=true` |
+| fixture 清理和恢复复核 | 10 条 SQL 行、6 个 Redis hash 已清理并复核；未重置自增计数、全库或全局列表 |
+| 无对象写入的供应商探测 | **8 / 8**，支付配置布尔检查全部通过，`cosWritesStarted=false` |
+| 实际 STS 与缺失对象 HEAD | 两端合计 **8 次 STS 签发、8 次 HEAD 404**；没有对象 PUT/GET/DELETE |
+| 只读环境映射 | **22 项业务环境值一致，6 / 6 密钥文件内容完全一致且两端可读**；未导出值、密钥或指纹，也未改线上环境 |
+
+业务对照运行标识为 `codex_20261112_b0_d8294e9_a1`。更早 `fa630128ec7a9041b112af945ddacdd1106fdcc0` 候选为 20/24，差异仅在分页 Link 的 HTTP/HTTPS scheme；d829 只将分页链接按原生 socket TLS 状态生成，保留真实协议差异检查，没有改变可信代理、IP、认证、Location 或支付通知 URL，随后复测为 24/24。
+
+供应商探测运行标识为 `codex_20261112_b0_d829_provider_a1`。商户证书有效性、与私钥/序列号匹配、签名往返及平台验证材料等布尔检查全部通过。探测先确认两端存储 scope 相同，再签发同 scope 短效 STS 并 HEAD 不存在的对象；没有扩大桶权限。真实微信登录/手机号、付款/退款/回调、COS 对象 PUT/GET/DELETE、Y1 与实体设备的连接/拍摄/上报/上传仍属延期范围。COS 写入模式仍为实验性且未获线上执行批准，无版本对象 DELETE 不被宣称具备原子归属保证。
+
+较早的 **834/835** 本地严格结果与 **42/42** 供应商合同是修复前阶段记录。本轮严格结果稳定后重新生成 HTML 和 JSON；它们记录本地代码验证，不代表完成切流。报告里的线上信息来自 `runtime/online-acceptance` 的有限状态摘要，当前代码、本地镜像、较早线上候选和历史归档分别列示。原始初轮 797 组中 121 组不同，归档于 `baseline-20261112`；新增边界用例后分母不同。
 
 本地环境已经准备好时：
 
@@ -38,13 +59,18 @@ node --import tsx scripts/differential/serve.ts
 # 另一终端顺序执行
 node --import tsx scripts/differential/run-integration.ts
 node --import tsx scripts/differential/run.ts
+# 所有套件结束后再生成报告
 node --import tsx scripts/differential/report.ts
 npm run parity -- --source-root ../game
 ```
 
-重建空本地测试环境时先用 `scripts/differential/compose.yaml` 启动 MySQL/Redis，再运行 `prepare.ts --fresh`。该参数遇到已存在的 parity 库会拒绝，不会 DROP；已有库直接复用 context。所有写入测试均有 loopback、专用端口、parity 库名与 Redis DB 保护。
+重建空测试环境时先用 `scripts/differential/compose.yaml` 启动 MySQL/Redis，再运行 `prepare.ts --fresh`。遇到既有 parity 库会拒绝，不会 DROP；已有库复用 context。这些写入受 loopback、专用端口、parity 库名与 Redis DB 保护，不能用于业务库。当前测试仅使用 MySQL；下方 MariaDB 内容是历史归档。
 
-生产依赖审计另记录同一 multer 2.4.0 公告及其 Nest 依赖链的两条 high；当前源码未注册 multer/multipart 上传中间件，本轮未升级依赖。详情保留在 `runtime/parity-validation/dependency-audit.json`。
+在线工具 `scripts/acceptance/online-parity.cjs`、`scripts/acceptance/providers.cjs` 是显式授权后手工执行的独立流程，要求批准候选 SHA 与唯一 runId，不随应用或 CI 自动运行。fixture 恢复复核只证明本次行和 Redis 成员清理，不代表全库时间点恢复。配置、密钥和 context 位于被忽略的 runtime 目录，不得提交；报告生成器只嵌入白名单状态/脱敏证据。
+
+后端 [42task/wechat](https://github.com/42task/wechat) 和小程序 [42task/bujiaban-mp](https://github.com/42task/bujiaban-mp) 迁移保留 Git 历史；管理前端已抽离到 [42task/checkin-frontend](https://github.com/42task/checkin-frontend)，[前端 CI 43228540382](https://github.com/42task/checkin-frontend/actions/runs/43228540382) 通过。原 [gdgeek/game](https://github.com/gdgeek/game) 保持未修改的 Yii 对照。仓库整理不代表业务切流。
+
+生产依赖审计另记录同一 multer 2.4.0 公告及其 Nest 依赖链的两条 high；当前源码未注册 multer/multipart 上传中间件，本轮未升级依赖。详情在 `runtime/parity-validation/dependency-audit.json`。
 
 ## 历史归档：2026-10-23 契约对齐
 

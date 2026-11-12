@@ -6,6 +6,7 @@ coverage/
 .env.*
 !.env.example
 runtime/
+.oracle/
 certs/
 *.log
 .DS_Store

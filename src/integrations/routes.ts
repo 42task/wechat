@@ -5,6 +5,7 @@ import type { ApiRouter } from '../core/router';
 import { ApiError } from '../core/errors';
 import { yiiObject } from '../core/serialization';
 import { MiniProgramFileService } from '../v2/file-service';
+import { phpInt, phpNumberType, phpTruthy } from '../core/php';
 
 const success = (data: unknown, message = 'success') => ({ success: true, message, data });
 const userFields = (row: Row) => Object.fromEntries(['id', 'tel', 'nickname', 'avatar', 'role'].map(name => [name, row[name] ?? null]));
@@ -15,9 +16,27 @@ function issuer(ctx: Context): string {
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.length > 0; }
 function phpEmpty(value: unknown): boolean { return value == null || value === false || value === 0 || value === '' || value === '0' || Array.isArray(value) && value.length === 0; }
 function numeric(value: unknown): boolean {
-  return (typeof value === 'number' || typeof value === 'string' && value.trim() !== '' && /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i.test(value.trim())) && Number.isFinite(Number(value));
+  // PHP is_numeric accepts numeric strings (including overflow exponents) but
+  // only ASCII numeric whitespace, rather than JavaScript trim's NBSP set.
+  return typeof value === 'number' || typeof value === 'string' && /^[ \t\n\r\f\v]*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?[ \t\n\r\f\v]*$/i.exec(value)?.[0] === value;
 }
-function errorCode(error: unknown): number { return error instanceof HttpException ? error.getStatus() : Number((error as Row)?.status || 500); }
+/** Scalar PHP != used before profile assignment/validation, unlike AR dirty checks. */
+function profileEqual(previous: unknown, requested: unknown): boolean {
+  if (typeof previous === 'boolean' || typeof requested === 'boolean') return phpTruthy(previous) === phpTruthy(requested);
+  if (previous == null || requested == null) return (previous ?? '') === (requested ?? '');
+  if (numeric(previous) && numeric(requested)) {
+    const value = (item: unknown): number | bigint => {
+      if (typeof item === 'string' && /^[ \t\n\r\f\v]*[+-]?\d+[ \t\n\r\f\v]*$/.exec(item)?.[0] === item) {
+        const integer = BigInt(item);
+        if (integer >= -9223372036854775808n && integer <= 9223372036854775807n) return integer;
+      }
+      return Number(item);
+    };
+    const left = value(previous), right = value(requested);
+    return typeof left === 'bigint' && typeof right === 'bigint' ? left === right : Number(left) === Number(right);
+  }
+  return previous === requested;
+}
 function fileDescription(key: unknown): string {
   let description = '';
   for (const character of `AR打卡服务:${basename(String(key ?? ''))}`) {
@@ -55,8 +74,9 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
     const patch: Row = {};
     for (const field of ['avatar', 'nickname']) {
       if (phpEmpty(ctx.body[field])) continue;
+      if (profileEqual(user[field], ctx.body[field])) continue;
       if (typeof ctx.body[field] !== 'string' || [...ctx.body[field]].length > 255) return bad('Failed to save user profile', 500);
-      if (ctx.body[field] !== user[field]) patch[field] = ctx.body[field];
+      patch[field] = ctx.body[field];
     }
     if (Object.keys(patch).length) user = await db.update('user', user.id, patch);
     return success({ user: userFields(user) }, 'Profile updated successfully');
@@ -97,25 +117,25 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       if (version === 'v2') {
         if (!nonempty(input.out_trade_no) || !/^[A-Za-z0-9_-]{6,32}$/.test(input.out_trade_no)) return bad('商户订单号格式不正确');
         const file = await files.findOwned(input.file_id, user!);
-        order = { ...await files.reserveOrder(input.out_trade_no, file, user!, input.amount ?? null, input.openid ?? null), out_trade_no: input.out_trade_no, description: fileDescription(file.key) };
+        order = { ...await files.reserveOrder(input.out_trade_no, file, user!, input.amount ?? null, input.openid ?? null, phpNumberType(input, 'amount')), out_trade_no: input.out_trade_no, description: fileDescription(file.key) };
       } else {
-        if (!nonempty(input.openid)) return { code: 400, message: '缺少openid参数' };
-        if (!nonempty(input.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
-        if (!numeric(input.amount) || Number(input.amount) <= 0 || !Number.isSafeInteger(Math.trunc(Number(input.amount)))) return { code: 400, message: '金额参数不正确' };
+        if (phpEmpty(input.openid)) return { code: 400, message: '缺少openid参数' };
+        if (phpEmpty(input.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
+        if (phpEmpty(input.amount) || !numeric(input.amount)) return { code: 400, message: '金额参数不正确' };
         if (!/^[A-Za-z0-9_-]{6,32}$/.test(input.out_trade_no)) return { code: 400, message: '商户订单号格式不正确，要求6-32位字母数字或下划线' };
-        order = { openid: input.openid, out_trade_no: input.out_trade_no, amount: Math.trunc(Number(input.amount)), description: input.description };
+        order = { openid: input.openid, out_trade_no: input.out_trade_no, amount: phpInt(input.amount), description: input.description };
       }
       try {
         const notifyUrl = api.config.notifyUrl || `${issuer(ctx).replace(/\/$/, '')}${prefix}/notify`;
         return { code: 0, data: await api.order(order, notifyUrl) };
       }
-      catch { return { code: 500, message: '支付下单失败' }; }
+      catch (error) { return { code: 500, message: `支付下单失败: ${error instanceof Error ? error.message : ''}` }; }
     });
     router.add('GET', `${prefix}/wxpay-query-order-by-out-trade-no`, async ctx => {
       const user = await authorize(ctx);
       ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
       if (version === 'v2' && (!nonempty(ctx.query.out_trade_no) || !/^[A-Za-z0-9_-]{6,32}$/.test(ctx.query.out_trade_no))) return bad('订单编号无效');
-      if (!nonempty(ctx.query.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
+      if (phpEmpty(ctx.query.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
       if (version === 'v2') await files.assertOrderOwner(ctx.query.out_trade_no, user!);
       let result: Row;
       try {
@@ -132,37 +152,36 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       await authorize(ctx);
       ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
       const id = ctx.query.transaction_id;
-      if (!nonempty(id)) return { code: 400, message: '缺少微信支付订单号参数' };
+      if (phpEmpty(id)) return { code: 400, message: '缺少微信支付订单号参数' };
       if (!/^\d{28}$/.test(id)) return { code: 400, message: '微信支付订单号格式不正确，应为28位数字' };
       try {
         const result = await api.payment('GET', `/v3/pay/transactions/id/${encodeURIComponent(id)}?mchid=${encodeURIComponent(api.config.mchId || '')}`);
         return { code: 0, message: '查询成功', data: { order_info: result, trade_state: result.trade_state ?? '', trade_state_desc: result.trade_state_desc ?? '', out_trade_no: result.out_trade_no ?? '', transaction_id: result.transaction_id ?? '', amount: result.amount?.total ?? 0, payer: result.payer ?? [], success_time: result.success_time ?? '' } };
-      } catch (error) { return errorCode(error) === 404 ? { code: 404, message: '订单不存在', data: null } : { code: 500, message: '查询订单失败' }; }
+      } catch (error) { return { code: 500, message: `查询订单失败: ${error instanceof Error ? error.message : ''}` }; }
     });
     router.add('POST', `${prefix}/wxpay-refund`, async ctx => {
       await authorize(ctx);
       ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
       const input = ctx.body;
-      if (!nonempty(input.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
-      if (!nonempty(input.out_refund_no)) return { code: 400, message: '缺少商户退款单号参数' };
-      if (!numeric(input.refund_amount) || Number(input.refund_amount) <= 0) return { code: 400, message: '退款金额参数不正确' };
-      if (!numeric(input.total_amount) || Number(input.total_amount) <= 0) return { code: 400, message: '订单总金额参数不正确' };
-      const refund = Math.trunc(Number(input.refund_amount)), total = Math.trunc(Number(input.total_amount));
-      if (!Number.isSafeInteger(refund) || !Number.isSafeInteger(total)) return { code: 400, message: '退款金额参数不正确' };
+      if (phpEmpty(input.out_trade_no)) return { code: 400, message: '缺少商户订单号参数' };
+      if (phpEmpty(input.out_refund_no)) return { code: 400, message: '缺少商户退款单号参数' };
+      if (phpEmpty(input.refund_amount) || !numeric(input.refund_amount) || Number(input.refund_amount) <= 0) return { code: 400, message: '退款金额参数不正确' };
+      if (phpEmpty(input.total_amount) || !numeric(input.total_amount) || Number(input.total_amount) <= 0) return { code: 400, message: '订单总金额参数不正确' };
+      const refund = phpInt(input.refund_amount), total = phpInt(input.total_amount);
       if (refund > total) return { code: 400, message: '退款金额不能大于订单总金额' };
       try {
         const result = await api.payment('POST', '/v3/refund/domestic/refunds', { out_trade_no: input.out_trade_no, out_refund_no: input.out_refund_no, reason: input.reason === undefined ? '' : input.reason, ...(api.config.refundNotifyUrl ? { notify_url: api.config.refundNotifyUrl } : {}), amount: { refund, total, currency: 'CNY' } });
         return { code: 0, message: '退款申请成功', data: { refund_id: result.refund_id ?? '', out_refund_no: result.out_refund_no ?? '', status: result.status ?? '', refund_amount: result.amount?.refund ?? 0, success_time: result.success_time ?? '' } };
-      } catch { return { code: 500, message: '申请退款失败' }; }
+      } catch (error) { return { code: 500, message: `申请退款失败: ${error instanceof Error ? error.message : ''}` }; }
     });
     router.add('GET', `${prefix}/wxpay-query-refund`, async ctx => {
       await authorize(ctx);
       ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
-      if (!nonempty(ctx.query.out_refund_no)) return { code: 400, message: '缺少商户退款单号参数' };
+      if (phpEmpty(ctx.query.out_refund_no)) return { code: 400, message: '缺少商户退款单号参数' };
       try {
         const result = await api.payment('GET', `/v3/refund/domestic/refunds/${encodeURIComponent(ctx.query.out_refund_no)}`);
         return { code: 0, message: '查询成功', data: { refund_info: result, refund_status: result.status ?? '', refund_amount: result.amount?.refund ?? 0, success_time: result.success_time ?? '' } };
-      } catch { return { code: 500, message: '查询退款失败' }; }
+      } catch (error) { return { code: 500, message: `查询退款失败: ${error instanceof Error ? error.message : ''}` }; }
     });
     const notify = (refund: boolean) => async (ctx: Context) => {
       // WeChat cannot supply a user Bearer. Platform RSA signature authenticates this route.
@@ -180,6 +199,15 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       if (!handled) {
         ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
         return { code: 'SUCCESS', message: '成功' };
+      }
+      if (refund) {
+        // The original refunded handler reads both array keys. Missing keys
+        // cause the SDK retry response; an explicitly present null is legal.
+        for (const field of ['out_refund_no', 'refund_status']) if (!Object.hasOwn(notice.resource, field)) {
+          ctx.res.status(500);
+          ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
+          return { code: 'ERROR', message: `Undefined array key "${field}"` };
+        }
       }
       if (version === 'v2' && !refund && notice.resource?.trade_state === 'SUCCESS') {
         try {

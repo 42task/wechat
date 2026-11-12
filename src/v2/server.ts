@@ -3,6 +3,7 @@ import { ApiError } from '../core/errors';
 import { csv, hydrate, sqlNow } from './resources';
 import { recordRequest } from '../core/diagnostics';
 import { priceInCents } from './file-service';
+import { phpNumberType, setPhpNumberType } from '../core/php';
 
 const pictureBase = 'https://game-1251022382.cos.ap-nanjing.myqcloud.com/picture/';
 export function defaultData(): Row {
@@ -72,6 +73,7 @@ export function reportedVersion(body: Row): number {
 async function getReport(s: Services, ctx: Context, token: string, uuid?: string, version = 0): Promise<Row | null> {
   let row = await s.redis.find('report', token);
   if (!uuid) return redisRow('report', row);
+  const previous = row ? { ...row } : null;
   row ||= { token, uuid, created_at: String(Math.floor(Date.now() / 1000)) };
   if (!row.device_id) {
     let device = await s.db.one('SELECT * FROM device WHERE uuid = ?', [row.uuid]);
@@ -80,26 +82,34 @@ async function getReport(s: Services, ctx: Context, token: string, uuid?: string
   }
   // Yii updateAll() synchronizes every UUID login without firing timestamp behavior.
   await s.db.execute('UPDATE device SET version = ? WHERE id = ?', [version, row.device_id]);
-  for (const key of ['status', 'data']) if (truthy(ctx.body[key])) row[key] = ctx.body[key];
+  for (const key of ['status', 'data']) if (truthy(ctx.body[key])) {
+    row[key] = ctx.body[key];
+    const type = phpNumberType(ctx.body, key); if (type) setPhpNumberType(row, key, type);
+  }
   row.updated_at = String(Math.floor(Date.now() / 1000));
-  await s.redis.save('report', row);
+  await s.redis.save('report', row, previous);
   return redisRow('report', row);
 }
 async function getApplet(s: Services, ctx: Context, token: string, id?: string, authenticatedUser?: Row): Promise<Row | null> {
   let row = await s.redis.find('applet', token);
   if (!id) return redisRow('applet', row);
+  const previous = row ? { ...row } : null;
   if (!row) {
     const user = authenticatedUser || await s.auth.bearer(ctx, 'v2-user');
     row = { token, id, user_id: user.id, created_at: String(Math.floor(Date.now() / 1000)) };
   }
-  for (const key of ['status', 'data']) if (truthy(ctx.body[key])) row[key] = ctx.body[key];
+  for (const key of ['status', 'data']) if (truthy(ctx.body[key])) {
+    row[key] = ctx.body[key];
+    const type = phpNumberType(ctx.body, key); if (type) setPhpNumberType(row, key, type);
+  }
   row.updated_at = String(Math.floor(Date.now() / 1000));
-  await s.redis.save('applet', row);
+  await s.redis.save('applet', row, previous);
   return redisRow('applet', row);
 }
 async function getFile(s: Services, token: string, key: string | undefined, applet: Row | null): Promise<Row | null> {
   let recorded = await s.redis.find('recode_file', token);
   if (!key) return redisRow('recode_file', recorded);
+  const previous = recorded ? { ...recorded } : null;
   if (!recorded && applet) {
     let file = await s.db.one('SELECT * FROM file WHERE `key` = ?', [key]);
     if (!file) {
@@ -111,7 +121,7 @@ async function getFile(s: Services, token: string, key: string | undefined, appl
     } else file = await s.db.update('file', file.id, { user_id: applet.user_id });
     recorded = { token, key, created_at: file.created_at, updated_at: String(Math.floor(Date.now() / 1000)), file_id: file.id };
   }
-  if (recorded) await s.redis.save('recode_file', recorded);
+  if (recorded) await s.redis.save('recode_file', recorded, previous);
   return redisRow('recode_file', recorded);
 }
 export async function refresh(s: Services, ctx: Context, authenticatedUser?: Row): Promise<Row> {

@@ -1,5 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import { unescape } from 'node:querystring';
+import { HttpException } from '@nestjs/common';
 import type { ApiRouter } from '../core/router';
 import type { Context, Row, Services } from '../core/contracts';
 import { V1Models, fail, fieldNames, needed, phpTruthy, selectFields } from './models';
@@ -23,23 +24,48 @@ function legacyString(value:unknown,method:string,parameter:string):string {
   return typeof value === 'boolean' ? value ? '1' : '' : String(value);
 }
 const numericString=/^[ \t\n\r\f\v]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[ \t\n\r\f\v]*$/;
-function compareScore(value:unknown,budget:number):number {
-  // PHP 8 compares numeric strings numerically, nonnumeric strings against the
-  // number's string form, booleans as booleans, and JSON arrays above numbers.
-  if (typeof value === 'boolean') return Number(value)-Number(phpTruthy(budget));
-  if (value !== null && typeof value === 'object') return 1;
-  if (typeof value === 'string' && !numericString.test(value)) return value < String(budget) ? -1 : value > String(budget) ? 1 : 0;
-  const number=Number(value);
-  return number < budget ? -1 : number > budget ? 1 : 0;
+function compareScore(value:unknown,budget:unknown):number {
+  // Stored Record.game is a safe JSON attribute, so the budget can itself be a
+  // PHP scalar/array. Do not coerce it to a JS number before PHP comparisons.
+  const compare=(left:number|string,right:number|string) => left < right ? -1 : left > right ? 1 : 0;
+  const strings=(left:string,right:string) => Math.sign(Buffer.compare(Buffer.from(left),Buffer.from(right)));
+  if (typeof value === 'boolean' || typeof budget === 'boolean') return Number(phpTruthy(value))-Number(phpTruthy(budget));
+  if (value == null || budget == null) {
+    if (typeof value === 'string' || typeof budget === 'string') return strings(value == null ? '' : String(value),budget == null ? '' : String(budget));
+    return Number(phpTruthy(value))-Number(phpTruthy(budget));
+  }
+  const leftArray=typeof value === 'object',rightArray=typeof budget === 'object';
+  if (leftArray || rightArray) {
+    if (!leftArray || !rightArray) return leftArray ? 1 : -1;
+    const left=Object.entries(value),right=Object.entries(budget);
+    if (left.length !== right.length) return compare(left.length,right.length);
+    for (const [key,item] of left) {
+      if (!Object.hasOwn(budget,key)) return NaN; // Incomparable arrays: neither < nor >.
+      const comparison=compareScore(item,(budget as Row)[key]);if(comparison !== 0)return comparison;
+    }
+    return 0;
+  }
+  if (typeof value === 'string' && typeof budget === 'string') return numericString.test(value) && numericString.test(budget) ? compare(Number(value),Number(budget)) : strings(value,budget);
+  if (typeof value === 'string' && !numericString.test(value) || typeof budget === 'string' && !numericString.test(budget)) return strings(String(value),String(budget));
+  return compare(Number(value),Number(budget));
 }
-function arithmeticScore(value:unknown):number {
+function arithmeticScore(value:unknown,operator='+' as '+'|'-',other:unknown=0,valueOnLeft=false):number {
+  const type=(item:unknown) => item == null ? 'null' : typeof item === 'object' ? 'array' : typeof item === 'number' ? Number.isInteger(item) ? 'int' : 'float' : typeof item === 'boolean' ? 'bool' : 'string';
+  const unsupported=() => legacyFailure('Exception',`Unsupported operand types: ${type(valueOnLeft ? value : other)} ${operator} ${type(valueOnLeft ? other : value)}`,'TypeError');
+  if (value !== null && typeof value === 'object') return unsupported();
   if (typeof value === 'string' && !numericString.test(value)) {
     if (/^[ \t\n\r\f\v]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.test(value)) {
       return legacyFailure('PHP Warning','A non-numeric value encountered','yii\\base\\ErrorException',2);
     }
-    return legacyFailure('Exception','Unsupported operand types: int + string','TypeError');
+    return unsupported();
   }
   return Number(value);
+}
+function finishBudget(game:unknown):unknown {
+  if (game === null || game === undefined || typeof game === 'number' || typeof game === 'boolean') return legacyFailure('PHP Warning',`Trying to access array offset on ${game == null ? 'null' : typeof game === 'boolean' ? String(game) : Number.isInteger(game) ? 'int' : 'float'}`,'yii\\base\\ErrorException',2);
+  if (typeof game === 'string') return legacyFailure('Exception','Cannot access offset of type string on string','TypeError');
+  if (!Object.hasOwn(game,'points')) return legacyFailure('PHP Warning','Undefined array key "points"','yii\\base\\ErrorException',2);
+  return (game as Row).points;
 }
 function numericType(value:unknown,known?:PhpNumberType):PhpNumberType {
   if (known) return known;
@@ -145,7 +171,7 @@ export function registerV1(router: ApiRouter, s: Services): void {
     return s.db.transaction(async db => {
       const m=new V1Models(db), player=await m.require('player',c.body.targetId ?? null,'No Player',true);
       if (compareScore(supplied,Number(player.points))>0) fail(400,'Not Enough Points');
-      const points=Number(player.points)-arithmeticScore(supplied);
+      const points=Number(player.points)-arithmeticScore(supplied,'-',player.points);
       const type=arithmeticType(points,numericType(player.points,phpNumberType(player,'points')),numericType(supplied,phpNumberType(c.body,'points')));
       if (!phpIntegerValid(points,type)) legacyFailure('Exception','json_decode(): Argument #1 ($json) must be of type string, array given','TypeError');
       const changes={points};setPhpNumberType(changes,'points',type);
@@ -161,7 +187,8 @@ export function registerV1(router: ApiRouter, s: Services): void {
       const device=await m.require('device',deviceId,'No Device',true);
       const existing=await db.one('SELECT * FROM record WHERE player_id = ? AND device_id = ?',[player.id,device.id]);
       if (existing) fail(400,'Already Running');
-      const shop=await m.require('shop',device.shop_id,'No Shop',true);
+      const shop=await m.find('shop',device.shop_id,true);
+      if (!shop) legacyFailure('PHP Warning','Attempt to read property "price" on null','yii\\base\\ErrorException',2);
       const cost=Number(player.cost ?? 0)+Number(shop.price ?? 0);
       if (cost>Number(player.recharge ?? 0)+Number(player.give ?? 0)) fail(400,'Not Enough Money');
       const operation=await m.operation(shop.id);
@@ -190,13 +217,16 @@ export function registerV1(router: ApiRouter, s: Services): void {
     return s.db.transaction(async db => {
       const recordId=c.body.recordId ?? null,description=recordId === null ? '' : typeof recordId === 'boolean' ? recordId ? '1' : '' : String(recordId);
       const m=new V1Models(db), row=await m.require('record',typeof recordId === 'boolean' ? Number(recordId) : recordId,'No Record:'+description,true);
-      const device=await m.require('device',row.device_id,'No Device',true);
-      const shop=await m.require('shop',device.shop_id,'No Shop',true), player=await m.require('player',row.player_id,'No Player',true);
+      const device=await m.find('device',row.device_id,true);
+      const shop=device ? await m.find('shop',device.shop_id,true) : null;
+      if (!shop) legacyFailure('PHP Warning','Attempt to read property "price" on null','yii\\base\\ErrorException',2);
+      const player=await m.require('player',row.player_id,'No Player',true);
       const operation=await m.operation(shop.id), game=(await m.serialize('record',row)).game;
       const price=Number(shop.price ?? 0), percentage=Number(shop.rate ?? 0)/100, back=price*percentage;
       const backType:PhpNumberType=Number.isInteger(percentage) ? 'integer' : 'double';
       const cost=Number(player.cost ?? 0)-price;
-      const operationChanges={pool:Number(operation.pool ?? 0)+Number(game?.points ?? 0)-back,income:Number(operation.income ?? 0)-(price-back),turnover:Number(operation.turnover ?? 0)-price};
+      const restore=game !== null && typeof game === 'object' && Object.hasOwn(game,'points') && game.points !== null ? game.points : 0;
+      const operationChanges={pool:Number(operation.pool ?? 0)+arithmeticScore(restore,'+',operation.pool)-back,income:Number(operation.income ?? 0)-(price-back),turnover:Number(operation.turnover ?? 0)-price};
       const restoreType=numericType(game?.points,game && typeof game === 'object' ? phpNumberType(game,'points') : undefined);
       const operationTypes:Record<string,PhpNumberType>={pool:arithmeticType(operationChanges.pool,restoreType,backType),income:backType,turnover:'integer'};
       // Yii validates both models before saving either one. Its error branch
@@ -253,20 +283,30 @@ export function registerV1(router: ApiRouter, s: Services): void {
       if (row.status !== 'running') fail(400,'Game is not running');
       let supplied=needed(c.body.points,'points is required');
       let suppliedType=numericType(supplied,phpNumberType(c.body,'points'));
-      const player=await m.require('player',row.player_id,'No Player',true), shop=await m.require('shop',device.shop_id,'No Shop',true), op=await m.operation(shop.id);
-      const game=(await m.serialize('record',row)).game, budget=Number(game?.points ?? 0);
-      const budgetType=numericType(game?.points,game && typeof game === 'object' ? phpNumberType(game,'points') : undefined);
+      const player=await m.require('player',row.player_id,'No Player',true), shop=await m.find('shop',device.shop_id,true);
+      const game=(await m.serialize('record',row)).game, budget=finishBudget(game);
+      const budgetType=numericType(budget,game && typeof game === 'object' ? phpNumberType(game,'points') : undefined);
       if (compareScore(supplied,budget)>0) {supplied=budget;suppliedType=budgetType;}
       if (compareScore(supplied,0)<0) {supplied=0;suppliedType='integer';}
-      const points=arithmeticScore(supplied);
+      const points=arithmeticScore(supplied,'+',player.points);
       const playerChanges={points:Number(player.points ?? 0)+points,times:Number(player.times ?? 0)+1};
-      const left=budget-points,pool=Number(op.pool ?? 0)+left;
+      if (!shop) legacyFailure('PHP Warning','Attempt to read property "operation" on null','yii\\base\\ErrorException',2);
+      const op=await m.operation(shop.id);
+      const left=arithmeticScore(budget,'-',supplied,true)-points,pool=Number(op.pool ?? 0)+left;
       const playerPointsType=arithmeticType(playerChanges.points,numericType(player.points,phpNumberType(player,'points')),suppliedType);
       const poolType=arithmeticType(pool,budgetType,suppliedType);
       // Compatibility with GameController::actionFinish: save() validates each
       // model independently, ignores a failed integer validation, and still
       // deletes the record. Do not silently round fractional points in SQL.
-      if (phpIntegerValid(playerChanges.points,playerPointsType) && phpIntegerValid(playerChanges.times,'integer')) await db.update('player',player.id,{points:phpInt(playerChanges.points),times:phpInt(playerChanges.times)});
+      setPhpNumberType(playerChanges,'points',playerPointsType);
+      setPhpNumberType(playerChanges,'times','integer');
+      try { await m.save('player',playerChanges,player); }
+      catch (error) {
+        // User::save() returns false for any validation failure, not only its
+        // changed points/times. The source ignores that false return, but SQL
+        // errors still escape and must never be swallowed here.
+        if (!(error instanceof HttpException) || error.getStatus() !== 422) throw error;
+      }
       if (phpIntegerValid(pool,poolType)) await db.update('operation',op.id,{pool:phpInt(pool)});
       await db.delete('record',row.id);
       return result('Game over',{player:await m.player(await m.require('player',player.id,'No Player'))});
@@ -274,7 +314,7 @@ export function registerV1(router: ApiRouter, s: Services): void {
   });
 
   const state=async(token:string,fields:unknown='') => ({checkin:redisRow('checkin',await s.redis.find('checkin',token),fields),report:redisRow('report',await s.redis.find('report',token),fields),file:redisRow('recode_file',await s.redis.find('recode_file',token),fields)});
-  const save=async(model:string,row:Row) => {await s.redis.save(model,row);return redisRow(model,row)!;};
+  const save=async(model:string,row:Row,previous:Row|null) => {await s.redis.save(model,row,previous);return redisRow(model,row)!;};
   const matchOwner=(row:Row|null,openid:any) => row && String(row.openid ?? '') === String(openid);
   add('GET','checkin/status',async c => {
     const token=String(needed(c.query.token,'token is required')), exists=await s.redis.find('checkin',token), current=await state(token,c.query.fields);
@@ -290,9 +330,9 @@ export function registerV1(router: ApiRouter, s: Services): void {
   });
   for (const status of ['ready','linked']) add('POST','checkin/status-'+status,async c => {
     const token=String(needed(c.body.token,'token is required')), openid=String(needed(c.body.openid,'openid is required'));
-    let row=await s.redis.find('checkin',token);
-    if (!matchOwner(row,openid)) row={token,openid,created_at:sec()};
-    if (row!.status !== status) row=await save('checkin',{...row,status,updated_at:sec()});
+    const found=await s.redis.find('checkin',token), previous=matchOwner(found,openid) ? found : null;
+    let row=previous ?? {token,openid,created_at:sec()};
+    if (row.status !== status) row=await save('checkin',{...row,status,updated_at:sec()},previous);
     const file=await s.redis.find('recode_file',token);
     return result('success',{data:{checkin:redisRow('checkin',row,c.query.fields),file:matchOwner(file,openid)?redisRow('recode_file',file,c.query.fields):null}});
   });
@@ -308,7 +348,9 @@ export function registerV1(router: ApiRouter, s: Services): void {
   add('POST','checkin/upload',async c => {
     const token=String(needed(c.body.token,'token is required')), key=needed(c.body.key,'key is required');
     if (!await s.redis.find('checkin',token)) fail(400,'checkin not found');
-    return result('file upload success',{data:redisRow('recode_file',await save('recode_file',{...await s.redis.find('recode_file',token),token,key,created_at:sec()}),c.query.fields)});
+    const previous=await s.redis.find('recode_file',token);
+    const row=copyPhpMetadata(c.body,{...previous,token,key,created_at:sec()});
+    return result('file upload success',{data:redisRow('recode_file',await save('recode_file',row,previous),c.query.fields)});
   });
   add('GET','checkin/files',async c => {
     const openid=needed(c.query.openid,'openid is required'), files=(await s.redis.all('recode_file')).filter(row => matchOwner(row,openid));
@@ -337,15 +379,15 @@ export function registerV1(router: ApiRouter, s: Services): void {
     // The source calls all three helpers in order, even when only one of the
     // body fields is nonempty. Keep partial Redis writes preceding an exception.
     if (phpTruthy(c.body.device)) {
-      const existing=await s.redis.find('report',token), row=existing ?? {token,device:c.body.device,created_at:sec()};
-      for (const field of ['status','data']) if (phpTruthy(c.body[field])) row[field]=c.body[field];
-      row.updated_at=sec();await save('report',row);
+      const existing=await s.redis.find('report',token), previous=existing ? {...existing} : null, row=existing ?? {token,device:c.body.device,created_at:sec()};
+      for (const field of ['status','data']) if (phpTruthy(c.body[field])) {row[field]=c.body[field];const type=phpNumberType(c.body,field);if(type)setPhpNumberType(row,field,type);}
+      row.updated_at=sec();await save('report',row,previous);
     }
     const openid=legacyString(c.body.openid,'getCheckin','openid');
     if (phpTruthy(openid)) {
-      const existing=await s.redis.find('checkin',token), row=existing ?? {token,openid,created_at:sec()};
-      for (const field of ['status','data']) if (phpTruthy(c.body[field])) row[field]=c.body[field];
-      row.updated_at=sec();await save('checkin',row);
+      const existing=await s.redis.find('checkin',token), previous=existing ? {...existing} : null, row=existing ?? {token,openid,created_at:sec()};
+      for (const field of ['status','data']) if (phpTruthy(c.body[field])) {row[field]=c.body[field];const type=phpNumberType(c.body,field);if(type)setPhpNumberType(row,field,type);}
+      row.updated_at=sec();await save('checkin',row,previous);
     }
     const key=legacyString(c.body.key,'getFile','key');
     if (phpTruthy(key)) {

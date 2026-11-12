@@ -92,6 +92,17 @@ try {
         case 'payment-query-v1':
             $value = (new app\modules\v1\controllers\WechatPayController('wechat-pay', $app))->actionWxpayQueryOrderByOutTradeNo();
             break;
+        case 'payment-order-v1':
+            $value = (new app\modules\v1\controllers\WechatPayController('wechat-pay', $app))->actionWxpayOrder();
+            break;
+        case 'payment-refund':
+        case 'payment-query-refund':
+        case 'payment-query-transaction':
+            $class = ($input['version'] ?? 'v1') === 'v2' ? app\modules\v2\controllers\WechatPayController::class : app\modules\v1\controllers\WechatPayController::class;
+            $controller = new $class('wechat-pay', $app);
+            $action = ['payment-refund'=>'actionWxpayRefund','payment-query-refund'=>'actionWxpayQueryRefund','payment-query-transaction'=>'actionWxpayQueryOrderByTransactionId'][$input['operation']];
+            $value = $controller->$action();
+            break;
         case 'wechat-info':
             $value = (new app\modules\v1\controllers\WeChatController('we-chat', $app))->actionInfo();
             break;

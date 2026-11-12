@@ -118,9 +118,46 @@ async function main(): Promise<void> {
     return { response: await h.request(t, 'DELETE', '/admin-api/devices/1', undefined, bearer(scan.access)), devices: await h.sql(t, 'SELECT id FROM device ORDER BY id') };
   });
   await h.record('admin.devices.normalized-list', async t => { await seed(t); const credentials = await login(t); return clean(await h.request(t, 'GET', '/admin-api/devices', undefined, bearer(credentials.access))); });
+  await h.record('admin.devices.oversized-path-id', async t => {
+    await seed(t); const credentials = await login(t), id = '9'.repeat(400);
+    return { preview: await h.request(t, 'GET', `/admin-api/devices/${id}/image-previews`, undefined, bearer(credentials.access)), configuration: await h.request(t, 'PUT', `/admin-api/devices/${id}/configuration`, { title: 'Missing' }, bearer(credentials.access)), deleted: await h.request(t, 'DELETE', `/admin-api/devices/${id}`, undefined, bearer(credentials.access)) };
+  });
+  await h.record('admin.configuration.invalid-json-surrogates-and-depth', async t => {
+    await seed(t); const credentials = await login(t), headers = bearer(credentials.access);
+    const responses = [];
+    for (const raw of ['{"title":"\\ud800"}', '{"title":"\\udc00"}', '['.repeat(512) + '0' + ']'.repeat(512)]) responses.push(await h.request(t, 'PUT', '/admin-api/devices/1/configuration', raw, headers));
+    return { responses, persisted: await setupState(t) };
+  });
+  await h.record('admin.devices.php-zero-string-name-fallback', async t => {
+    await seed(t); await h.sql(t, 'UPDATE device SET tag=? WHERE id=1', ['0']); await h.sql(t, 'UPDATE setup SET title=? WHERE device_id=1', ['未知']);
+    const credentials = await login(t); return clean(await h.request(t, 'GET', '/admin-api/devices', undefined, bearer(credentials.access)));
+  });
+  await h.record('admin.devices.associative-content-via-v2', async t => {
+    await seed(t);
+    const updated = await h.request(t, 'PATCH', '/v2/setups/1', '{"slogans":{"first":" hello ","second":"world"},"pictures":{"2":" two ","0":"zero"},"thumbs":{"a":" thumb "}}', bearer(h.token('v2-user', 1)));
+    const credentials = await login(t);
+    return { updated, response: clean(await h.request(t, 'GET', '/admin-api/devices', undefined, bearer(credentials.access))) };
+  });
   await configurationCase('admin.configuration.regular-trim', { title: ' Renamed ', slogans: [' first ', '', 'first'], pictures: [], thumbs: [' https://public.example/thumb.jpg '] });
   await configurationCase('admin.configuration.clear-arrays', { slogans: [], pictures: [], thumbs: [] });
+  await h.record('admin.configuration.missing-setup-defaults-with-patch', async t => {
+    await seed(t); await h.sql(t, 'DELETE FROM setup WHERE device_id=1'); const credentials = await login(t);
+    return { response: clean(await h.request(t, 'PUT', '/admin-api/devices/1/configuration', { title: 'New setup', gameId: 3, slogans: [' one '], pictures: [] }, bearer(credentials.access))), persisted: await setupState(t) };
+  });
   await configurationCase('admin.configuration.invalid-game-id', { gameId: '3' });
+  await configurationCase('admin.configuration.clean-title-timestamp', { title: 'First title' });
+  await configurationCase('admin.configuration.clean-lists-timestamp', { pictures: ['https://public.example/one.jpg'], thumbs: [] });
+  await h.record('admin.game.clean-id-timestamp', async t => {
+    await seed(t); const credentials = await login(t);
+    return { response: clean(await h.request(t, 'PUT', '/admin-api/devices/1/game', { gameId: 3 }, bearer(credentials.access))), persisted: await setupState(t), timestamps: await h.sql(t, 'SELECT id,updated_at FROM setup ORDER BY id') };
+  });
+  for (const [name, lexeme] of [['float', '3.0'], ['exponent', '3e0'], ['scaled-exponent', '30e-1'], ['rounded-float', '3.0000000000000001']]) {
+    await configurationCase(`admin.configuration.raw-game-id-${name}`, `{"gameId":${lexeme},"title":"Rejected rename"}`);
+    await h.record(`admin.game.raw-game-id-${name}`, async t => {
+      await seed(t); const credentials = await login(t);
+      return { response: clean(await h.request(t, 'PUT', '/admin-api/devices/1/game', `{"gameId":${lexeme}}`, bearer(credentials.access))), persisted: await setupState(t) };
+    });
+  }
   await configurationCase('admin.configuration.unknown-field', { money: 10 });
   await configurationCase('admin.configuration.object-shaped-list', { slogans: {} });
   await configurationCase('admin.configuration.array-body', []);

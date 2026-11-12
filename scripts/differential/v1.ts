@@ -135,6 +135,38 @@ await h.record('v1-player-create-request-types-and-persistence', async t => {
   const result = await h.request(t, 'POST', '/v1/player', { tel: 'created-player', points: '3', info: { preference: 'fixture' } }, authorization());
   return { response: response(result), players: await h.sql(t, 'SELECT id,tel,points,info FROM player ORDER BY id') };
 });
+for (const [name,tel] of [['nbsp','\u00a0'],['form-feed','\f'],['nul','\0']] as const) {
+  await h.record('v1-player-required-php-trim-'+name,async t=>{
+    await h.reset(t);await players(t);
+    const created=await h.request(t,'POST','/v1/player',{tel},authorization());
+    return {response:response(created),players:await h.sql(t,'SELECT id,tel FROM player ORDER BY id')};
+  });
+}
+await h.record('v1-player-update-validates-unchanged-legacy-tel',async t=>{
+  await h.reset(t);await players(t);await h.sql(t,'UPDATE player SET tel=? WHERE id=2',['']);
+  return {response:response(await h.request(t,'PATCH','/v1/player/2',{nickname:'changed'},authorization())),players:await h.sql(t,'SELECT id,tel,nickname FROM player ORDER BY id')};
+});
+for (const [name,recharge] of [['terminal-lf','1\n'],['terminal-cr','1\r']] as const) {
+  await h.record('v1-player-number-pattern-'+name,async t=>{
+    await h.reset(t);await players(t);
+    return {response:response(await h.request(t,'PATCH','/v1/player/2',{recharge},authorization())),players:await h.sql(t,'SELECT id,recharge FROM player ORDER BY id')};
+  });
+}
+await h.record('v1-shop-gifts-eager-award-nested-fields',async t=>{
+  await h.reset(t);await game(t,false);
+  await h.sql(t,'INSERT INTO award (id,shop_id,price,type) VALUES (5,1,100,?)',['s']);
+  await h.sql(t,'INSERT INTO gift (id,award_id,uuid,created_at,updated_at) VALUES (6,5,?,?,?)',['gift-award',fixedDate,fixedDate]);
+  return {
+    nested:response(await h.request(t,'GET','/v1/shop/1?expand=gifts.award&fields=id,gifts.id,gifts.award.id',undefined,authorization())),
+    direct:response(await h.request(t,'GET','/v1/gift/6?expand=award&fields=id,award.id',undefined,authorization())),
+  };
+});
+await h.record('v1-award-update-existing-duplicate-default-pairs',async t=>{
+  await h.reset(t);await game(t,false);
+  const first=await h.request(t,'POST','/v1/award',{shop_id:1},authorization());
+  const second=await h.request(t,'POST','/v1/award',{shop_id:1},authorization());
+  return {first:response(first),second:response(second),update:response(await h.request(t,'PATCH','/v1/award/'+first.body.id,{price:200},authorization())),awards:await h.sql(t,'SELECT id,shop_id,type,price FROM award ORDER BY id')};
+});
 await h.record('v1-player-reject-fractional-points', async t => {
   await h.reset(t); await players(t);
   return { response: response(await h.request(t, 'PATCH', '/v1/player/2', { points: '1.5' }, authorization())), players: await h.sql(t, 'SELECT id,points FROM player ORDER BY id') };
@@ -239,6 +271,32 @@ await h.record('v1-game-finish-integer-points', async t => {
   await h.reset(t); await game(t);
   return { response: response(await h.request(t, 'POST', '/v1/game/finish?uuid=parity-game-device', { points: 3 })), balances: await balances(t) };
 });
+await h.record('v1-game-finish-ignores-complete-user-validation-failure',async t=>{
+  await h.reset(t);await game(t);await h.sql(t,'UPDATE player SET tel=? WHERE id=2',['']);
+  return {response:response(await h.request(t,'POST','/v1/game/finish?uuid=parity-game-device',{points:3})),balances:await balances(t)};
+});
+for (const [name,payload] of [['null',null],['missing-points',{}],['string','hello'],['number',1],['true',true],['false',false],['null-budget',{points:null}],['boolean-budget',{points:true}],['false-budget',{points:false}],['numeric-string-budget',{points:'10'}],['array-budget',{points:[]}],['nonnumeric-budget',{points:'abc'}],['unicode-line-budget',{points:'1\u2028'}]] as const) {
+  await h.record('v1-game-finish-stored-game-'+name,async t=>{
+    await h.reset(t);await game(t);await h.sql(t,'UPDATE record SET game=? WHERE id=1',[JSON.stringify(payload)]);
+    return {response:response(await h.request(t,'POST','/v1/game/finish?uuid=parity-game-device',{points:3})),balances:await balances(t)};
+  });
+}
+for (const [name,points] of [['array',[]],['object',{bad:1}],['nonnumeric','abc']] as const) {
+  await h.record('v1-close-record-stored-restore-'+name,async t=>{
+    await h.reset(t);await game(t);await h.sql(t,'UPDATE record SET game=? WHERE id=1',[JSON.stringify({points,secodes:60})]);
+    return {response:response(await h.request(t,'POST','/v1/system/close-record',{recordId:1},authorization())),balances:await balances(t)};
+  });
+}
+for (const action of ['ready-game','finish','close-record','close-record-history','finish-required-first','finish-budget-first']) {
+  await h.record('v1-missing-shop-'+action,async t=>{
+    await h.reset(t);await game(t,action!=='ready-game');
+    if(action==='close-record-history')await h.sql(t,'UPDATE record SET device_id=NULL WHERE id=1');
+    else await h.sql(t,'UPDATE device SET shop_id=NULL WHERE id=1');
+    if(action==='finish-required-first'||action==='finish-budget-first')await h.sql(t,'UPDATE record SET game=? WHERE id=1',['{}']);
+    const request=action==='ready-game'?h.request(t,'GET','/v1/system/ready-game?targetId=2&deviceId=1',undefined,authorization()):action.startsWith('close-record')?h.request(t,'POST','/v1/system/close-record',{recordId:1},authorization()):h.request(t,'POST','/v1/game/finish?uuid=parity-game-device',action==='finish-required-first'?{}:{points:3});
+    return {response:response(await request),balances:await balances(t)};
+  });
+}
 await h.record('v1-game-finish-fractional-points', async t => {
   await h.reset(t); await game(t);
   return { response: response(await h.request(t, 'POST', '/v1/game/finish?uuid=parity-game-device', { points: 1.5 })), balances: await balances(t) };

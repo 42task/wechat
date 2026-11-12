@@ -77,13 +77,20 @@ describe('current Yii integration action binding and response contracts', () => 
     await f.call('GET', '/v1/tencent-cloud/token', {}, { bucket: 'configured-123' });
     expect(f.federation).toHaveBeenLastCalledWith('configured-123', 'ap-nanjing');
   });
-  it('profile ignores PHP-empty fields and reports invalid nonempty values as failed saves', async () => {
+  it('profile ignores PHP-empty or loosely equal fields and reports invalid changed values as failed saves', async () => {
     const f = fixture();
     for (const nickname of [null, false, 0, '0', '', []]) {
       expect(await f.call('POST', '/v2/wechat/profile', { nickname })).toMatchObject({ success: true, data: { user: { nickname: 'before' } } });
     }
+    // PHP compares the existing nonempty string with true before assignment,
+    // so this is clean and never reaches User's string validator.
+    expect(await f.call('POST', '/v2/wechat/profile', { nickname: true })).toMatchObject({ success: true, data: { user: { nickname: 'before' } } });
     expect(f.db.update).not.toHaveBeenCalled();
-    for (const nickname of [12, true, ['not-string'], 'x'.repeat(256)]) await expect(f.call('POST', '/v2/wechat/profile', { nickname })).rejects.toMatchObject({ status: 500, message: 'Failed to save user profile' });
+    for (const nickname of [12, ['not-string'], 'x'.repeat(256)]) await expect(f.call('POST', '/v2/wechat/profile', { nickname })).rejects.toMatchObject({ status: 500, message: 'Failed to save user profile' });
+    // A changed boolean still fails the original User string validation.
+    f.auth.bearer.mockResolvedValueOnce({ id: 1, nickname: '', avatar: 'a', role: 'user' });
+    await expect(f.call('POST', '/v2/wechat/profile', { nickname: true })).rejects.toMatchObject({ status: 500, message: 'Failed to save user profile' });
+    expect(f.db.update).not.toHaveBeenCalled();
   });
   it('profile length counts Unicode characters rather than JavaScript UTF-16 units', async () => {
     const f = fixture(); const nickname = '😀'.repeat(200);

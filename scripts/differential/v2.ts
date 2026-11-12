@@ -84,6 +84,7 @@ await simple('v2.devices.empty-array-string-validation', 'PATCH', '/v2/devices/1
 await simple('v2.setups.large-device-id-string', 'POST', '/v2/setups', { device_id: '9007199254740993' });
 await simple('v2.setups.overflow-device-id-string', 'POST', '/v2/setups', { device_id: '9223372036854775808' });
 await simple('v2.setups.float-device-id', 'POST', '/v2/setups', '{"device_id":1.0}');
+await simple('v2.setups.non-finite-safe-json', 'PATCH', '/v2/setups/1', '{"slogans":[1e400]}');
 await simple('v2.setups.device-id-trailing-newline', 'POST', '/v2/setups', { device_id: '1\n' });
 await simple('v2.devices.manage-literal-filter', 'GET', '/v2/devices/manage?DeviceSearch%5Btag%5D=_&per-page=1&sort=id');
 await simple('v2.devices.foreign-detail-denied', 'GET', '/v2/devices/2');

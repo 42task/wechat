@@ -3,12 +3,15 @@ import { All, Controller, Inject, Module, Req, Res } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import express, { type Request, type Response } from 'express';
-import { parsePhpJson, parsePhpParameters } from './core/php';
+import { copyPhpMetadata, parsePhpJson, parsePhpParameters, PhpJsonError } from './core/php';
+import { isUtf8 } from 'node:buffer';
 import { dirname } from 'node:path';
 import { Database } from './core/database';
 import { adminRedisOptions, LegacyRedis } from './core/redis';
 import { AuthService } from './core/auth';
 import { ApiRouter } from './core/router';
+import { legacyStaticMiddleware } from './core/legacy-static';
+import { phpJsonEncode } from './core/json';
 import { ApiError, errorPayload } from './core/errors';
 import { xmlResponse } from './core/serialization';
 import type { Context, Row, Services } from './core/contracts';
@@ -79,6 +82,12 @@ export function createRouter(s: Services): ApiRouter {
 type ResponseFormat = 'html' | 'json' | 'xml';
 type CompatibilityRequest = Request & { bodyError?: ApiError; rawBody?: Buffer };
 
+function requestJson(raw: Buffer): any {
+  if (!isUtf8(raw)) throw new ApiError(400, 'Invalid JSON data in request body: Malformed UTF-8 characters, possibly incorrectly encoded');
+  try { return parsePhpJson(raw.toString('utf8')); }
+  catch (error) { throw new ApiError(400, `Invalid JSON data in request body: ${error instanceof PhpJsonError ? error.message : 'Syntax error'}`); }
+}
+
 function negotiateFormat(req: Request, res: Response, select: (format: ResponseFormat) => void): void {
   res.vary('Accept');
   const explicit = req.query._format;
@@ -114,7 +123,7 @@ function sendResult(req: Request, res: Response, result: unknown, format: Respon
   res.type(format === 'xml' ? 'application/xml' : format === 'json' ? 'application/json' : 'text/html');
   if (req.method === 'HEAD') { res.end(); return; }
   if (format === 'xml') res.send(xmlResponse(result));
-  else if (format === 'json') res.json(result === undefined ? null : result);
+  else if (format === 'json') res.send(phpJsonEncode(result === undefined ? null : result));
   else res.send(result === undefined || result === null ? '' : String(result));
 }
 
@@ -165,14 +174,27 @@ class CompatibilityController {
       let hasParsedJsonBody = false;
       const context: Context = { req, res, query: req.query, params: resolved.params,
         get body() {
-          if ((req as CompatibilityRequest).bodyError) throw (req as CompatibilityRequest).bodyError;
+          if ((req as CompatibilityRequest).bodyError) {
+            const raw = (req as CompatibilityRequest).rawBody;
+            if (req.is('application/json') && raw?.length && !isUtf8(raw)) requestJson(raw);
+            throw (req as CompatibilityRequest).bodyError;
+          }
           if (resolvedPath === '/admin-api/devices/:id/configuration') {
-            if (req.is('application/json') && (req as CompatibilityRequest).rawBody?.length && (req.body === null || typeof req.body !== 'object' || Array.isArray(req.body))) throw new ApiError(422, '设备配置必须为 JSON 对象');
+            // The source reparses this route as stdClass, preserving objects
+            // versus lists as well as PHP's strict integer/double distinction.
+            if (req.is('application/json') && (req as CompatibilityRequest).rawBody?.length) {
+              if (!hasParsedJsonBody) {
+                const body = requestJson((req as CompatibilityRequest).rawBody!);
+                if (req.body === null || typeof req.body !== 'object' || Array.isArray(req.body)) throw new ApiError(422, '设备配置必须为 JSON 对象');
+                parsedJsonBody = copyPhpMetadata(body, req.body); hasParsedJsonBody = true;
+              }
+              return parsedJsonBody as Row;
+            }
             if (req.is('application/x-www-form-urlencoded') && Array.isArray(req.body)) return Object.assign({}, req.body);
             return req.body ?? {};
           }
           if (req.is('application/json') && (req as CompatibilityRequest).rawBody?.length) {
-            if (!hasParsedJsonBody) { parsedJsonBody = parsePhpJson((req as CompatibilityRequest).rawBody!.toString('utf8')) ?? []; hasParsedJsonBody = true; }
+            if (!hasParsedJsonBody) { parsedJsonBody = requestJson((req as CompatibilityRequest).rawBody!) ?? []; hasParsedJsonBody = true; }
             return parsedJsonBody as Row;
           }
           return req.body ?? {};
@@ -199,6 +221,7 @@ export async function createApplication(services = createServices()): Promise<IN
   const app = await NestFactory.create(ApplicationModule, { logger: process.env.NODE_ENV === 'test' ? false : ['error', 'warn', 'log'], bodyParser: false });
   const server = app.getHttpAdapter().getInstance() as express.Express;
   server.disable('x-powered-by');
+  server.use(legacyStaticMiddleware());
   server.set('query parser', parsePhpParameters);
   server.use('/swagger-ui', express.static(dirname(require.resolve('swagger-ui-dist/swagger-ui-bundle.js'))));
   if (process.env.TRUST_PROXY) server.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : process.env.TRUST_PROXY);

@@ -2,7 +2,7 @@ import mysql, { type Pool, type PoolConnection } from 'mysql2/promise';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ApiError } from './errors';
 import type { Row } from './contracts';
-import { isJsonColumn, markJsonDecoded } from './json';
+import { isJsonColumn, markJsonDecoded, phpJsonEncode } from './json';
 import { parsePhpJson, setPhpNumberType } from './php';
 
 export interface Column { name: string; type: string; nullable: boolean; default?: unknown; key?: string; }
@@ -19,7 +19,7 @@ export class Database {
     this.pool = pool ?? mysql.createPool({
       host: process.env.MYSQL_HOST ?? '127.0.0.1', port: Number(process.env.MYSQL_PORT ?? 3306),
       user: process.env.MYSQL_USER ?? 'game', password: process.env.MYSQL_PASSWORD ?? '',
-      database: process.env.MYSQL_DATABASE ?? 'game', charset: process.env.MYSQL_CHARSET ?? 'utf8mb4',
+      database: process.env.MYSQL_DATABASE ?? 'game', charset: process.env.MYSQL_CHARSET ?? 'utf8',
       timezone: '+08:00', dateStrings: true, decimalNumbers: true,
       connectionLimit: Number(process.env.MYSQL_POOL_SIZE ?? 10), connectTimeout: 5000,
       supportBigNumbers: true, bigNumberStrings: true,
@@ -49,8 +49,8 @@ export class Database {
     return this.schema.get(table)!;
   }
   private value(table: string, column: Column, value: unknown): unknown {
-    if (value !== null && isJsonColumn(table, column.name, column.type)) return JSON.stringify(value);
-    return value !== null && typeof value === 'object' && !(value instanceof Date) && !Buffer.isBuffer(value) ? JSON.stringify(value) : value;
+    if (value !== null && isJsonColumn(table, column.name, column.type)) return phpJsonEncode(value);
+    return value !== null && typeof value === 'object' && !(value instanceof Date) && !Buffer.isBuffer(value) ? phpJsonEncode(value) : value;
   }
   async insert(table: string, data: Row): Promise<Row> {
     const columns = await this.columns(table);

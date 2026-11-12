@@ -44,6 +44,7 @@ const callback = (raw: string, options: Parameters<typeof headers>[1] = {}) => (
 const validNotice = notice();
 const refundNotice = notice('REFUND.SUCCESS');
 const xmlNotice = '<xml><event_type>TRANSACTION.SUCCESS</event_type><trade_state>SUCCESS</trade_state><out_trade_no>fixture-order</out_trade_no></xml>';
+const httpError = (status = 400) => ({ status, ...provider({ code: 'PARAM_ERROR', message: 'synthetic provider failure' }) });
 const cases: Case[] = [
   { id: 'mini.code-sdk.success', operation: 'code-sdk', provider: provider({ openid: 'fixture-openid', unionid: 'fixture-union' }) },
   { id: 'mini.code-sdk.errcode', operation: 'code-sdk', provider: provider({ errcode: 40029, errmsg: 'invalid fixture code' }) },
@@ -55,12 +56,23 @@ const cases: Case[] = [
   { id: 'mini.phone.missing-phone-info', operation: 'phone', provider: provider({ errcode: 0 }) },
   { id: 'mini.phone.provider-errcode', operation: 'phone', provider: provider({ errcode: 40029, errmsg: 'invalid fixture phone code' }) },
   { id: 'pay.sdk.success', operation: 'payment-sdk', provider: payment({ trade_state: 'NOTPAY' }) },
+  { id: 'pay.sdk.empty-object', operation: 'payment-sdk', provider: payment({}) },
+  { id: 'pay.sdk.empty-list', operation: 'payment-sdk', provider: payment([]) },
+  { id: 'pay.sdk.list', operation: 'payment-sdk', provider: payment([{ total: 100 }]) },
+  { id: 'pay.sdk.empty-204', operation: 'payment-sdk', provider: { status: 204, raw: '', headers: headers('') } },
   { id: 'pay.sdk.expired-signature', operation: 'payment-sdk', provider: payment({ trade_state: 'NOTPAY' }, { offset: -600 }), securityBoundary: 'Both must reject old signatures; public exception envelopes may differ.' },
   { id: 'pay.sdk.future-signature', operation: 'payment-sdk', provider: payment({ trade_state: 'NOTPAY' }, { offset: 600 }), securityBoundary: 'Retains the current Yii SDK past-age check; future timestamps still require a valid trusted signature.' },
   { id: 'pay.sdk.invalid-signature', operation: 'payment-sdk', provider: payment({ trade_state: 'NOTPAY' }, { signature: 'invalid' }), securityBoundary: 'Do not weaken verification to align error text or status.' },
   { id: 'pay.sdk.unknown-serial', operation: 'payment-sdk', provider: payment({ trade_state: 'NOTPAY' }, { serial: 'UNKNOWN_SERIAL' }), securityBoundary: 'Both must reject untrusted verification key IDs.' },
   { id: 'pay.query.http400-unsigned', operation: 'payment-query-v1', provider: { status: 400, ...provider({ code: 'PARAM_ERROR', message: 'fixture bad request' }) }, query: { out_trade_no: 'fixture-order' } },
   { id: 'pay.query.success', operation: 'payment-query-v1', provider: payment({ trade_state: 'NOTPAY', out_trade_no: 'fixture-order' }), query: { out_trade_no: 'fixture-order' } },
+  { id: 'pay.order.http400', operation: 'payment-order-v1', provider: httpError(), body: { openid: 'fixture-openid', out_trade_no: 'fixture-order', amount: 100 } },
+  { id: 'pay.order.http500', operation: 'payment-order-v1', provider: httpError(500), body: { openid: 'fixture-openid', out_trade_no: 'fixture-order', amount: 100 } },
+  { id: 'pay.order.missing-prepay-id', operation: 'payment-order-v1', provider: payment({ code: 'FIXTURE_ERROR', message: 'synthetic failure / 演示' }), body: { openid: 'fixture-openid', out_trade_no: 'fixture-order', amount: 100 } },
+  { id: 'pay.order.zero-openid', operation: 'payment-order-v1', body: { openid: '0', out_trade_no: 'fixture-order', amount: 100 } },
+  { id: 'pay.order.numeric-openid', operation: 'payment-order-v1', provider: httpError(), body: { openid: 123456, out_trade_no: 'fixture-order', amount: 100 } },
+  { id: 'pay.order.zero-number', operation: 'payment-order-v1', body: { openid: 'fixture-openid', out_trade_no: '0', amount: 100 } },
+  { id: 'pay.order.numeric-number', operation: 'payment-order-v1', provider: httpError(), body: { openid: 'fixture-openid', out_trade_no: 123456, amount: 100 } },
   { id: 'pay.info.wechat-configured', operation: 'wechat-info' },
   { id: 'pay.info.wechat-unconfigured', operation: 'wechat-info', configured: false },
   { id: 'pay.info.appid-configured', operation: 'payment-info' },
@@ -80,6 +92,25 @@ const cases: Case[] = [
   { id: 'cos.legacy-object-url-array-key', operation: 'qcloud-object-url', query: { key: ['fixture/movie.mp4'] } },
   { id: 'cos.legacy-object-url-invalid-expires', operation: 'qcloud-object-url', query: { key: 'fixture/movie.mp4', expires: '001' } },
 ];
+for (const version of ['v1', 'v2'] as const) {
+  const refundBody = { out_trade_no: 'fixture-order', out_refund_no: 'fixture-refund', refund_amount: 50, total_amount: 100 };
+  cases.push(
+    { id: `pay.${version}-refund.http400`, operation: 'payment-refund', version, provider: httpError(), body: refundBody },
+    { id: `pay.${version}-refund.success`, operation: 'payment-refund', version, provider: payment({ refund_id: 'fixture-id', status: 'PROCESSING', amount: { refund: 50 } }), body: refundBody },
+    { id: `pay.${version}-refund.numeric-numbers`, operation: 'payment-refund', version, provider: httpError(), body: { ...refundBody, out_trade_no: 123456, out_refund_no: 234567 } },
+    { id: `pay.${version}-query-refund.http400`, operation: 'payment-query-refund', version, provider: httpError(), query: { out_refund_no: 'fixture-refund' } },
+    { id: `pay.${version}-query-refund.zero`, operation: 'payment-query-refund', version, query: { out_refund_no: '0' } },
+    { id: `pay.${version}-query-transaction.http404`, operation: 'payment-query-transaction', version, provider: httpError(404), query: { transaction_id: '1'.repeat(28) } },
+  );
+  for (const field of ['out_trade_no', 'out_refund_no']) cases.push({ id: `pay.${version}-refund.zero-${field}`, operation: 'payment-refund', version, body: { ...refundBody, [field]: '0' } });
+  for (const field of ['out_refund_no', 'refund_status']) cases.push({
+    id: `pay.callback.${version}-refund-missing-${field}`, operation: 'callback', version, refund: true,
+    callback: callback(notice('REFUND.SUCCESS', 'SUCCESS', { [field]: undefined })),
+  });
+  cases.push({ id: `pay.callback.${version}-refund-null-fields`, operation: 'callback', version, refund: true,
+    callback: callback(notice('REFUND.SUCCESS', 'SUCCESS', { out_refund_no: null, refund_status: null })),
+  });
+}
 for (const [field, value] of [['mchid', 'other-fixture-merchant'], ['appid', 'other-fixture-app']]) {
   const metadata = { [field]: value };
   cases.push(
@@ -98,7 +129,7 @@ async function nodeResult(test: Case) {
   }), now: () => now, fetch: async (url, options) => {
     const target = new URL(String(url)); calls.push({ method: options?.method || 'GET', path: target.pathname });
     if (target.pathname === '/cgi-bin/stable_token') return Response.json({ access_token: 'synthetic-local-token', expires_in: 7200 });
-    return new Response(test.provider?.raw ?? '{}', { status: test.provider?.status || 200, headers: test.provider?.headers || { 'Content-Type': 'application/json' } });
+    return new Response(test.provider?.status === 204 ? null : test.provider?.raw ?? '{}', { status: test.provider?.status || 200, headers: test.provider?.headers || { 'Content-Type': 'application/json' } });
   } });
   const user: Row = { id: 1, tel: null, nickname: 'Fixture', avatar: null, role: 'user', openid: 'fixture-openid', unionid: 'fixture-union' };
   const db = { one: async () => { throw Error('Unexpected database lookup in provider-only fixture'); }, update: async (_table: string, _id: unknown, patch: Row) => Object.assign(user, patch) };
@@ -111,9 +142,9 @@ async function nodeResult(test: Case) {
     else if (test.operation === 'payment-sdk') body = await api.payment('GET', '/v3/pay/transactions/out-trade-no/fixture-order');
     else {
       const version = test.version || 'v1';
-      const path = { 'login-v2': '/v2/site/login', 'openid-v1': '/v1/we-chat/openid', phone: '/v2/wechat/bind-phone', 'payment-query-v1': '/v1/wechat-pay/wxpay-query-order-by-out-trade-no', 'wechat-info': '/v1/we-chat/info', 'payment-info': '/v1/wechat-pay/info', 'qcloud-object-url': '/v1/q-cloud/object-url', callback: `/${version}/wechat-pay/${test.refund ? 'refund-notify' : 'notify'}` }[test.operation];
+      const path = { 'login-v2': '/v2/site/login', 'openid-v1': '/v1/we-chat/openid', phone: '/v2/wechat/bind-phone', 'payment-query-v1': '/v1/wechat-pay/wxpay-query-order-by-out-trade-no', 'payment-order-v1': '/v1/wechat-pay/wxpay-order', 'payment-refund': `/${version}/wechat-pay/wxpay-refund`, 'payment-query-refund': `/${version}/wechat-pay/wxpay-query-refund`, 'payment-query-transaction': `/${version}/wechat-pay/wxpay-query-order-by-transaction-id`, 'wechat-info': '/v1/we-chat/info', 'payment-info': '/v1/wechat-pay/info', 'qcloud-object-url': '/v1/q-cloud/object-url', callback: `/${version}/wechat-pay/${test.refund ? 'refund-notify' : 'notify'}` }[test.operation];
       if (!path) throw Error('Unknown Node provider operation');
-      const method = ['payment-query-v1', 'wechat-info', 'payment-info', 'qcloud-object-url'].includes(test.operation) ? 'GET' : 'POST';
+      const method = ['payment-query-v1', 'payment-query-refund', 'payment-query-transaction', 'wechat-info', 'payment-info', 'qcloud-object-url'].includes(test.operation) ? 'GET' : 'POST';
       const route = router.match(method, path)!;
       body = await route.route.handler({ req: { method, path, protocol: 'https', get: () => 'provider.fixture.invalid', headers: test.callback?.headers || {}, rawBody: Buffer.from(test.callback?.raw || '') }, res, body: test.body || { code: 'synthetic-code' }, query: test.query || {}, params: route.params } as unknown as Context);
     }
@@ -138,8 +169,11 @@ async function main() {
       try { yii = JSON.parse(php.stdout); }
       catch { throw new Error(`PHP provider oracle failed for ${test.id}: ${php.stderr.slice(0, 500)}`); }
       const node = await nodeResult(test);
-      const equal = isDeepStrictEqual(yii.result, node.result);
-      const row = { id: test.id, operation: test.operation, equal, ...(test.securityBoundary ? { securityBoundary: test.securityBoundary } : {}), yii, node };
+      // PHP's injected AccessToken already supplies a synthetic token; Node's
+      // local stable_token fixture is the only intentional transport extra.
+      const transportEqual = isDeepStrictEqual(yii.transportCalls, node.transportCalls.filter(call => call.path !== '/cgi-bin/stable_token'));
+      const equal = isDeepStrictEqual(yii.result, node.result) && transportEqual;
+      const row = { id: test.id, operation: test.operation, equal, transportEqual, ...(test.securityBoundary ? { securityBoundary: test.securityBoundary } : {}), yii, node };
       results.push(safe(row)); console.log(`${equal ? 'MATCH' : 'DIFFERENT'} ${test.id}`);
     }
   } finally { Object.assign(process.env, prior); }

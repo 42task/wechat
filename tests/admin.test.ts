@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SceneCatalog, sceneBaseUrl } from '../src/admin/scenes';
 import { normalizeDevice, validateConfiguration } from '../src/admin/devices';
+import { parsePhpJson } from '../src/core/php';
 
 describe('scene catalog contract', () => {
   it('accepts approved HTTPS and internal Y1 roots and rejects credentials or arbitrary HTTP', () => {
@@ -42,5 +43,12 @@ describe('device configuration contract', () => {
   });
   it('uses device tag/uuid fallback, does not invent heartbeat, preserves blank raw title', () => {
     expect(normalizeDevice({ id: 1, uuid: 'u1', tag: 'A', updated_at: 'now' }, { title: '未知', scene_id: null, slogans: [' x '] })).toMatchObject({ id: 1, name: 'A', title: '未知', status: 'unknown', gameId: null, slogans: ['x'] });
+  });
+  it('uses PHP zero-string fallback and retains existing associative JSON content in source order', () => {
+    expect(normalizeDevice({ id: 1, tag: '0', uuid: 'synthetic-uuid' }, { title: '未知' }).name).toBe('synthetic-uuid');
+    expect(normalizeDevice({ id: 1, tag: null, uuid: '0' }, null).name).toBe('设备 1');
+    const setup = parsePhpJson('{"slogans":{"first":" hello ","second":"world"},"pictures":{"2":" two ","0":"zero","skip":1},"thumbs":{"a":" thumb "}}');
+    expect(normalizeDevice({ id: 1 }, setup)).toMatchObject({ slogans: ['hello', 'world'], pictures: ['two', 'zero'], thumbs: ['thumb'] });
+    expect(() => validateConfiguration({ slogans: { first: 'hello' } })).toThrow('slogans 必须为字符串列表');
   });
 });

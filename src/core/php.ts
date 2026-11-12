@@ -33,6 +33,8 @@ export function phpInt(value: unknown): number {
 
 export type PhpNumberType = 'integer' | 'double';
 
+export class PhpJsonError extends SyntaxError {}
+
 /** PHP's default precision=14 float cast, used by Yii NumberValidator. */
 export function phpFloatString(value: number): string {
   if (Number.isNaN(value)) return 'NAN';
@@ -58,6 +60,17 @@ export function phpIntegerValid(value: unknown, type?: PhpNumberType): boolean {
 const sourceOrder = new WeakMap<object, string[]>();
 const numberTypes = new WeakMap<object, Map<string, PhpNumberType>>();
 const normalizedArrays = new WeakSet<object>();
+
+/** PHP arrays retain numeric-key insertion order, unlike JavaScript objects. */
+export function phpArrayValues(value: object): unknown[] {
+  const known = sourceOrder.get(value) ?? [];
+  const keys = [...known, ...Object.keys(value).filter(key => !known.includes(key))];
+  return keys.filter(key => Object.hasOwn(value, key)).map(key => (value as Row)[key]);
+}
+
+export function phpTruthy(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '' && value !== false && value !== 0 && value !== '0' && !(typeof value === 'object' && Object.keys(value).length === 0);
+}
 
 export function setPhpNumberType(container: object, key: string, type: PhpNumberType): void {
   let types = numberTypes.get(container);
@@ -97,7 +110,16 @@ export function normalizePhpJson(value: any): any {
  * JSON.parse would discard before Yii's strict dirty-attribute comparison.
  */
 export function parsePhpJson(raw: string, numberType?: (type: PhpNumberType | undefined) => void): any {
-  JSON.parse(raw); // Keep native syntax validation before walking valid JSON.
+  JSON.parse(raw);
+  const unicode = (text: string): void => {
+    for (let index = 0; index < text.length; index++) {
+      const unit = text.charCodeAt(index);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const next = text.charCodeAt(++index);
+        if (!(next >= 0xdc00 && next <= 0xdfff)) throw new PhpJsonError('Single unpaired UTF-16 surrogate in unicode escape');
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) throw new PhpJsonError('Single unpaired UTF-16 surrogate in unicode escape');
+    }
+  };
   let offset = 0;
   const whitespace = () => { while (/[ \t\r\n]/.test(raw[offset] ?? '') && offset < raw.length) offset++; };
   const string = (): string => {
@@ -107,11 +129,16 @@ export function parsePhpJson(raw: string, numberType?: (type: PhpNumberType | un
       if (char === '\\') offset++;
       else if (char === '"') break;
     }
-    return JSON.parse(raw.slice(start, offset));
+    const decoded = JSON.parse(raw.slice(start, offset));
+    unicode(decoded);
+    return decoded;
   };
-  function value(): { value: any; type?: PhpNumberType } {
+  function value(depth = 0): { value: any; type?: PhpNumberType } {
     whitespace();
     if (raw[offset] === '{' || raw[offset] === '[') {
+      // Validate raw values before a duplicate key can overwrite them. PHP's
+      // default depth=512 accepts at most 511 nested containers.
+      if (depth >= 511) throw new PhpJsonError('Maximum stack depth exceeded');
       const object = raw[offset++] === '{';
       const closing = object ? '}' : ']';
       const children = new Map<string, { value: any; type?: PhpNumberType }>();
@@ -119,7 +146,7 @@ export function parsePhpJson(raw: string, numberType?: (type: PhpNumberType | un
       while (raw[offset] !== closing) {
         const key = object ? string() : String(children.size);
         if (object) { whitespace(); offset++; }
-        children.set(key, value());
+        children.set(key, value(depth + 1));
         whitespace();
         if (raw[offset] === ',') { offset++; whitespace(); } else break;
       }

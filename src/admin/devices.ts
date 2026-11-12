@@ -1,23 +1,23 @@
 import type { Row, Services } from '../core/contracts';
 import { ApiError } from '../core/errors';
 import { defaultData } from '../v2/server';
-import { phpTrim } from '../core/php';
+import { copyPhpMetadata, phpArrayValues, phpNumberType, phpTrim, phpTruthy, phpValuesEqual } from '../core/php';
 
-function content(values: unknown): string[] { return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string' && phpTrim(value) !== '').map(value => phpTrim(value)) : []; }
+function content(values: unknown): string[] { return values && typeof values === 'object' ? phpArrayValues(values).filter((value): value is string => typeof value === 'string' && phpTrim(value) !== '').map(value => phpTrim(value)) : []; }
 export function normalizeDevice(device: Row, setup: Row | null): Row {
   const title = String(setup?.title ?? '');
-  return { id: Number(device.id), version: Number(device.version ?? 0), uuid: String(device.uuid ?? ''), name: phpTrim(title) && phpTrim(title) !== '未知' ? phpTrim(title) : String(device.tag || device.uuid || `设备 ${device.id}`), title, ip: String(device.ip ?? ''), status: 'unknown', createdAt: String(device.created_at ?? ''), updatedAt: String(setup?.updated_at || device.updated_at || ''), gameId: setup?.scene_id == null ? null : Number(setup.scene_id), slogans: content(setup?.slogans), pictures: content(setup?.pictures), thumbs: content(setup?.thumbs) };
+  return { id: Number(device.id), version: Number(device.version ?? 0), uuid: String(device.uuid ?? ''), name: phpTrim(title) && phpTrim(title) !== '未知' ? phpTrim(title) : String(phpTruthy(device.tag) ? device.tag : phpTruthy(device.uuid) ? device.uuid : `设备 ${device.id}`), title, ip: String(device.ip ?? ''), status: 'unknown', createdAt: String(device.created_at ?? ''), updatedAt: String(setup?.updated_at || device.updated_at || ''), gameId: setup?.scene_id == null ? null : Number(setup.scene_id), slogans: content(setup?.slogans), pictures: content(setup?.pictures), thumbs: content(setup?.thumbs) };
 }
 export function validateConfiguration(input: unknown): Row {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ApiError(422, '设备配置必须为 JSON 对象');
-  const patch = { ...input } as Row;
+  const patch = copyPhpMetadata(input, { ...input }) as Row;
   const allowed = ['gameId', 'title', 'slogans', 'pictures', 'thumbs'];
   if (!Object.keys(patch).length || Object.keys(patch).some(key => !allowed.includes(key))) throw new ApiError(422, '请仅提交需要修改的设备名称、游戏、口号、图片或缩略图');
-  if ('gameId' in patch && (!Number.isInteger(patch.gameId) || patch.gameId <= 0)) throw new ApiError(422, 'gameId 必须为有效的游戏编号');
+  if ('gameId' in patch && (phpNumberType(patch, 'gameId') === 'double' || !Number.isInteger(patch.gameId) || patch.gameId <= 0)) throw new ApiError(422, 'gameId 必须为有效的游戏编号');
   if ('title' in patch) {
     if (typeof patch.title !== 'string' || [...phpTrim(patch.title)].length > 255) throw new ApiError(422, 'title 必须为不超过 255 个字符的设备名称');
     patch.title = phpTrim(patch.title);
-    if (['utf8', 'utf8mb3'].includes((process.env.MYSQL_CHARSET ?? 'utf8mb4').toLowerCase()) && /[\u{10000}-\u{10FFFF}]/u.test(patch.title)) throw new ApiError(422, '设备名称暂不支持表情符号，请使用文字或数字');
+    if (['utf8', 'utf8mb3'].includes((process.env.MYSQL_CHARSET ?? 'utf8').toLowerCase()) && /[\u{10000}-\u{10FFFF}]/u.test(patch.title)) throw new ApiError(422, '设备名称暂不支持表情符号，请使用文字或数字');
   }
   for (const field of ['slogans', 'pictures', 'thumbs']) if (field in patch) {
     if (!Array.isArray(patch[field]) || Object.keys(patch[field]).some((key, index) => key !== String(index)) || patch[field].some((value: unknown) => typeof value !== 'string')) throw new ApiError(422, `${field} 必须为字符串列表`);
@@ -70,15 +70,19 @@ export class AdminDevices {
         const where = userId === null ? '' : ' AND id IN (SELECT device_id FROM control WHERE user_id=?)';
         const device = await db.one(`SELECT * FROM device WHERE id=?${where} FOR UPDATE`, userId === null ? [id] : [id, userId]);
         if (!device) throw new ApiError(404, '设备不存在');
-        let setup = await db.one('SELECT * FROM setup WHERE device_id=? LIMIT 1', [id]);
-        if (!setup) {
-          const scene = patch.gameId ?? (await this.services.catalog.getGames())[0]?.id ?? null;
-          setup = await db.insert('setup', { ...defaultData(), title: '未知', pictures: [1, 2, 3, 4].map(i => `https://game-1251022382.cos.ap-nanjing.myqcloud.com/picture/t${i}.png`), scene_id: scene, device_id: id });
-        }
         const data: Row = {};
         for (const field of ['title', 'slogans', 'pictures', 'thumbs']) if (field in patch) data[field] = patch[field];
         if ('gameId' in patch) data.scene_id = patch.gameId;
-        setup = await db.update('setup', setup.id, data);
+        let setup = await db.one('SELECT * FROM setup WHERE device_id=? LIMIT 1', [id]);
+        if (!setup) {
+          const scene = patch.gameId ?? (await this.services.catalog.getGames())[0]?.id ?? null;
+          setup = await db.insert('setup', { ...defaultData(), title: '未知', pictures: [1, 2, 3, 4].map(i => `https://game-1251022382.cos.ap-nanjing.myqcloud.com/picture/t${i}.png`), scene_id: scene, device_id: id, ...data });
+          return normalizeDevice(device, setup);
+        }
+        // Setup::save() skips timestamp behavior when all assigned values are
+        // strictly unchanged, including decoded JSON lists.
+        const current = setup;
+        if (Object.entries(data).some(([field, value]) => !phpValuesEqual(value, current[field], phpNumberType(data, field), phpNumberType(current, field)))) setup = await db.update('setup', setup.id, data);
         return normalizeDevice(device, setup);
       });
     } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(503, '设备配置暂时无法保存，请稍后重试', undefined, 'HttpException'); }

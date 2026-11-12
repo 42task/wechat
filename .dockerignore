@@ -7,4 +7,5 @@ coverage
 .env.*
 certs
 runtime
+.oracle
 *.log
