@@ -245,7 +245,12 @@ function plan(f) {
   ].map(([id,method,url,body,domain,status=200])=>({id,method,url,body,domain,status}));
 }
 function normalized(value, target) {
-  if (typeof value === 'string') return value.replaceAll(target, 'https://REFERENCE');
+  if (typeof value === 'string') {
+    const host=new URL(target).host.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    // Deployment hostnames differ. Keep http/https literal so an application
+    // proxy-scheme mismatch remains a real difference in the result.
+    return value.replace(new RegExp('(https?):\\/\\/'+host+'(?=[/?#\\s<>"\']|$)','g'),(_match,scheme)=>scheme+'://REFERENCE');
+  }
   if (Array.isArray(value)) return value.map(item=>normalized(item,target));
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,normalized(item,target)]));
@@ -346,7 +351,10 @@ function selfTest() {
   const f={names:fixtureNames('codex_guard_test'),ids:{player:1,shop:2,device:3,user:4,setup:5,file:6,foreign:7}};
   assert.equal(plan(f).length,24);assert(plan(f).every(test=>!/(wechat|wxpay|scan-login|reset-shop|refresh|helper\/test)/.test(test.url)));
   assert(Object.values(TARGETS).every(url=>new URL(url).protocol==='https:'));
-  return {mode:'self-test',passed:6,network:false,writes:false};
+  assert.equal(normalized('http://x.b0.01xr.com/v2/devices?page=1',TARGETS.yii),normalized('http://x2.b0.01xr.com/v2/devices?page=1',TARGETS.node));
+  assert.notEqual(normalized('http://x.b0.01xr.com/v2/devices?page=1',TARGETS.yii),normalized('https://x2.b0.01xr.com/v2/devices?page=1',TARGETS.node));
+  assert.equal(normalized('http://x.b0.01xr.com.evil.invalid/a',TARGETS.yii),'http://x.b0.01xr.com.evil.invalid/a');
+  return {mode:'self-test',passed:9,network:false,writes:false};
 }
 async function main(env=process.env,args=process.argv.slice(2)) {
   const config=configuration(env,args);if(config.mode==='--self-test')return selfTest();

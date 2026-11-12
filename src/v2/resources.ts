@@ -3,6 +3,7 @@ import { ApiError } from '../core/errors';
 import { hasDecodedJson, markJsonDecoded } from '../core/json';
 import { yiiObject } from '../core/serialization';
 import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpValuesEqual, type PhpNumberType } from '../core/php';
+import { paginationOrigin } from '../core/pagination';
 
 type Resource = 'device' | 'setup' | 'file';
 const columns: Record<Resource, string[]> = {
@@ -120,7 +121,7 @@ export async function paginate(s: Services, ctx: Context, resource: Resource, us
   const rows = await s.db.query(`SELECT * FROM ${resource}${suffix}${order} LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, params);
   if (options.headers !== false) {
   for (const [name, value] of Object.entries({ 'X-Pagination-Total-Count': total, 'X-Pagination-Page-Count': pageCount, 'X-Pagination-Current-Page': page, 'X-Pagination-Per-Page': pageSize })) ctx.res.setHeader(name, value);
-  const base = new URL(ctx.req.originalUrl || ctx.req.url || '/', `${ctx.req.protocol || 'http'}://${ctx.req.get('host') || 'localhost'}`);
+  const base = new URL(ctx.req.originalUrl || ctx.req.url || '/', paginationOrigin(ctx.req));
   for (const [key, value] of Object.entries(ctx.query)) if (typeof value === 'string' || typeof value === 'number') base.searchParams.set(key, String(value));
   const link = (target: number, rel: string) => { const url = new URL(base); url.searchParams.set('page', String(target)); return `<${url.toString()}>; rel="${rel}"`; };
   const links = [link(page, 'self')];

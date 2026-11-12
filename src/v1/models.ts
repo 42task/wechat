@@ -5,6 +5,7 @@ import { hasDecodedJson, markJsonDecoded } from '../core/json';
 import { ApiError } from '../core/errors';
 import { yiiObject } from '../core/serialization';
 import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpValuesEqual } from '../core/php';
+import { paginationOrigin } from '../core/pagination';
 
 export const fail = (status: number, message: string): never => { throw new ApiError(status, message, undefined, status === 400 ? 'HttpException' : undefined); };
 export const phpTruthy = (value:any):boolean => value !== undefined && value !== null && value !== '' && value !== false && value !== 0 && value !== '0' && !(typeof value === 'object' && Object.keys(value).length === 0);
@@ -162,7 +163,7 @@ export class V1Models {
     ctx.res.setHeader('X-Pagination-Total-Count',String(total));ctx.res.setHeader('X-Pagination-Page-Count',String(pageCount));
     ctx.res.setHeader('X-Pagination-Current-Page',String(page));ctx.res.setHeader('X-Pagination-Per-Page',String(size));
     const pageLink=(target:number) => {
-      const url=new URL(ctx.req.originalUrl ?? '/v1/'+table,ctx.req.protocol+'://'+(ctx.req.get('host') ?? 'localhost'));
+      const url=new URL(ctx.req.originalUrl ?? '/v1/'+table,paginationOrigin(ctx.req));
       for (const [key,value] of Object.entries(ctx.query)) url.searchParams.set(key,String(value));
       if (size === 20) url.searchParams.delete('per-page'); else url.searchParams.set('per-page',String(size));
       url.searchParams.set('page',String(target));
