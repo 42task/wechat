@@ -1,5 +1,7 @@
 # wechat2 后端部署
 
+**当前 b0/b1 镜像更新以 [共用部署说明](DEPLOYMENT-B0-B1.md) 和 [compose.image.yaml](../compose.image.yaml) 为准。** 两端已完成 Node 切换，前端实际使用双 `x2` 别名和统一 `c.4mr.cn` origin。下文首次创建示例仅保留历史参考，不可直接用于当前更新；它缺少现有多 Host 路由、外部命名密钥卷和全部应用配置。旧 Portainer Stack 也尚未同步，不要直接重新部署。
+
 Node 后端使用独立镜像 `hkccr.ccs.tencentyun.com/gdgeek/wechat2`，Portainer Stack、Compose 服务和容器统一命名为 `wechat2`。沿用现有 `game` 的数据库、Redis、只读密钥和 `proxy` 网络；只部署后端。
 
 ## CI 镜像
@@ -15,9 +17,9 @@ Node 后端使用独立镜像 `hkccr.ccs.tencentyun.com/gdgeek/wechat2`，Portai
 
 `publish` 不更新 `main`、`latest` 或其他分支标签；发布过程不修改旧的 `gdgeek/wechat` 镜像。部署可固定完整 SHA 标签，以便核对构建及回滚。镜像内的 `GIT_COMMIT` / `BUILD_TIME` 和 OCI revision/created labels 记录构建来源。
 
-本轮候选分支只发布完整 SHA 标签，不更新 `main`、`develop`、`publish`、`latest`，也不触发跟随这些标签的 Watchtower。CI 发布镜像不会修改 Portainer Stack。上线联调应先记录当前 Node 的完整镜像标签及 digest，然后只更新 Node 业务容器，保留旧镜像用于回滚；现有 Stack 若含密钥准备、备份或迁移服务，整栈重新部署可能重跑这些任务，须先核对其配置。不要把 Yii 的入口域名或镜像改为候选版本。
+最初候选分支只发布完整 SHA 标签；后续同步 `main` 将按上表发布 `main/latest/sha`。CI 发布镜像不会修改 Portainer Stack；当前两台 Node 固定 SHA 与 digest，不跟随 `latest`。更新前保留已知可用镜像和应用配置，只更新 Node 业务服务；现有旧 Stack 的密钥准备、备份或迁移任务可能在整栈部署时重跑，不能据此执行镜像更新。
 
-## b0 / b1 单 Stack
+## 历史首次创建示例（当前更新不使用）
 
 在每台服务器创建一个 `wechat2` Stack，使用相同 Compose 内容。Stack 的环境变量由部署平台填写，密钥不写入仓库。
 
@@ -84,7 +86,7 @@ networks:
 
 微信登录/支付、腾讯云 COS/STS 和 Swagger 的环境变量按 `.env.example` 及 `src/integrations/README.md` 补入该服务的 `environment`；商户私钥、平台公钥也通过只读目录挂载。未显式覆盖支付通知地址时，后端使用当前 `PUBLIC_ORIGIN` 加对应版本的 `/wechat-pay/notify` 路径。b0 与 b1 的 DNS、TLS 证书和公网通知入口分别验证。容器内进程使用 UID 1000，宿主机密钥必须允许该用户读取。
 
-## 数据迁移与验收
+## 历史迁移示例（当前操作见共用部署说明）
 
 生产镜像包含已编译的迁移及 SQL，不依赖 `tsx`、开发依赖或 PHP。启动服务不会自动迁移。保留数据库备份后，使用与 Stack 相同的连接配置在目标数据库执行一次普通迁移；已有 `game` 数据库不要加 `--bootstrap`。
 
