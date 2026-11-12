@@ -42,6 +42,8 @@ npm run migrate -- --bootstrap
 
 ## 验证
 
+2026-11-12 本轮兼容性修复、MySQL 回归结果、已保留差异及线上验收边界见 [验证记录](docs/VALIDATION.md)。当前本地候选尚未部署，真实环境验收完成前不建议切换。
+
 ```sh
 npm run build
 npm test
@@ -50,10 +52,10 @@ npm run parity
 npm run parity -- --source-root /path/to/game
 ```
 
-普通测试不连接生产资源。SQL/HTTP 集成测试要求显式开启并限定本机测试数据库：
+普通测试不连接生产资源。SQL/HTTP 集成测试统一使用 MySQL 8.4 和 Redis 7.4，CI 也只验证 MySQL 8.4。集成测试要求显式开启并限定本机测试数据库：
 
 ```sh
-docker compose -f compose.test.yaml up -d
+docker compose -f compose.test.yaml up -d --wait
 export MYSQL_HOST=127.0.0.1 MYSQL_PORT=33367 MYSQL_USER=root
 export MYSQL_PASSWORD=wechat-local-test MYSQL_DATABASE=wechat_test
 export REDIS_HOST=127.0.0.1 REDIS_PORT=36379 REDIS_DB=0

@@ -110,7 +110,8 @@ describe('source-derived HTTP route parity', () => {
     expect(audit.unexplainedExtras).toContainEqual(expect.objectContaining({ method: 'GET', path: '/invented-api' }));
     expect(audit.unexpected404Changes).toContainEqual(expect.objectContaining({ method: 'GET', path: '/v2/wechat/info' }));
     expect(audit.unexplainedExtras).toContainEqual(expect.objectContaining({ method: 'GET', path: '/v2/wechat/code' }));
-    expect(audit.documentedAdaptations).toContainEqual(expect.objectContaining({ method: 'GET', path: '/v1/q-cloud/object-url' }));
+    expect(audit.covered).toContainEqual(expect.objectContaining({ method: 'GET', path: '/v1/q-cloud/object-url' }));
+    expect(audit.documentedAdaptations).not.toContainEqual(expect.objectContaining({ method: 'GET', path: '/v1/q-cloud/object-url' }));
     expect(audit.unexpectedVerbChanges).toContainEqual(expect.objectContaining({ method: 'HEAD', path: '/admin-api/session' }));
   });
 });

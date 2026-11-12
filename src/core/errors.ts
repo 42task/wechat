@@ -17,5 +17,6 @@ export function errorPayload(error: unknown): { status: number; body: unknown } 
   // The deployed Yii API exposes public HTTP exception types. Keep these stable
   // without exposing runtime paths, stack traces, SQL details or credentials.
   const type = value?.yiiType ?? (value instanceof ApiError || typeof value?.getStatus === 'function' ? `${types[status] ?? ''}HttpException` : 'HttpException');
-  return { status, body: { name: value?.errorName ?? names[status] ?? 'Internal Server Error', message, code: 0, status, type: `yii\\web\\${type}` } };
+  const debug = !['0', 'false', 'off'].includes((process.env.YII_DEBUG ?? 'true').toLowerCase());
+  return { status, body: { name: value?.errorName ?? names[status] ?? 'Internal Server Error', message, code: 0, status, ...(debug ? { type: type.includes('\\') ? type : `yii\\web\\${type}` } : {}) } };
 }

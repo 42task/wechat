@@ -26,8 +26,16 @@ export class AuthService {
   async verifyToken(token: string, domain: IdentityDomain): Promise<Row> {
     let claims: jwt.JwtPayload;
     try {
-      const decoded = jwt.verify(token, this.key(), { algorithms: ['HS256'], clockTimestamp: Math.floor((this.options.now?.() ?? Date.now()) / 1000) });
-      if (typeof decoded === 'string' || decoded.identityDomain !== domain || !Number.isInteger(decoded.uid) || decoded.uid <= 0 || !['iat', 'nbf', 'exp'].every(field => typeof decoded[field] === 'number') || decoded.iat! > Math.floor((this.options.now?.() ?? Date.now()) / 1000)) throw new Error('Invalid identity');
+      const nowMs = Math.floor(this.options.now?.() ?? Date.now());
+      // Yii emits fractional NumericDate claims. Do not round the current time
+      // down to a whole second: a freshly issued Yii token would look premature.
+      // Compare iat/nbf at Date.now()'s millisecond resolution, without adding
+      // clock leeway or extending expiry. jsonwebtoken still verifies exp/signature.
+      const decoded = jwt.verify(token, this.key(), { algorithms: ['HS256'], clockTimestamp: nowMs / 1000, ignoreNotBefore: true });
+      const nextMillisecond = (nowMs + 1) / 1000;
+      if (typeof decoded === 'string' || decoded.identityDomain !== domain || !Number.isInteger(decoded.uid) || decoded.uid <= 0
+        || !['iat', 'nbf', 'exp'].every(field => typeof decoded[field] === 'number' && Number.isFinite(decoded[field]))
+        || decoded.iat! >= nextMillisecond || decoded.nbf! >= nextMillisecond) throw new Error('Invalid identity');
       claims = decoded;
     } catch { throw new ApiError(401, 'Your request was made with invalid credentials.'); }
     const user = await this.db.one(`SELECT * FROM ${domain === 'v1-player' ? '`player`' : '`user`'} WHERE id=?`, [claims.uid]);
@@ -51,7 +59,19 @@ export class AuthService {
       throw new ApiError(401, directJwt ? 'Your request was made with invalid or expired JSON Web Token.' : 'Your request was made with invalid credentials.');
     };
     if (!match) return fail();
-    try { return await this.verifyToken(match[1], domain); }
+    try {
+      const user = await this.verifyToken(match[1], domain);
+      // These Yii CompositeAuth controllers establish a PHP session after a
+      // successful Bearer login, which adds the default session cache headers.
+      // DeviceBearerAuth explicitly disables that session side effect.
+      const path = unescape((ctx.req.path ?? '').replace(/\+/g, ' '));
+      if (domain === 'v2-user' && /^\/v2\/(?:files(?:\/|$)|applet\/refresh(?:\/|$)|wechat\/(?:profile|phone|bind-phone)(?:\/|$)|wechat-pay(?:\/|$))/.test(path)) {
+        ctx.res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        ctx.res.setHeader('Expires', 'Thu, 19 Nov 1981 08:52:00 GMT');
+        ctx.res.setHeader('Pragma', 'no-cache');
+      }
+      return user;
+    }
     catch (error) { if (error instanceof ApiError && error.status === 401) return fail(); throw error; }
   }
   async refresh(token: string, domain: IdentityDomain, issuer: string): Promise<TokenPair> {
@@ -63,14 +83,20 @@ export class AuthService {
   }
   requireDevice(ctx: Context): void {
     const body = ctx.body;
-    if (!body.token) throw new ApiError(400, 'token is required');
-    const values = [body.uuid, body.id, body.key].filter(value => value !== undefined && value !== null && value !== '' && value !== 0 && value !== '0' && value !== false);
-    if (values.length !== 1) throw new ApiError(400, 'Exactly one of uuid, id, or key must be provided');
-    if (this.options.devAuth ?? process.env.GAME_DEV_AUTH === '1') return;
-    if (!ctx.query.time || !ctx.query.hash) throw new ApiError(400, 'time and hash are required');
-    if (typeof body.token !== 'string' || !/^[a-z][0-9a-f]{32}$/i.test(body.token)) throw new ApiError(400, 'token format error');
+    const fail = (message: string): never => { throw new ApiError(400, message, undefined, 'HttpException'); };
+    const present = (value: unknown) => value !== undefined && value !== null && value !== '' && value !== 0 && value !== '0' && value !== false
+      && !(typeof value === 'object' && Object.keys(value).length === 0);
+    if (!present(body.token)) fail('token is required');
+    const values = [body.uuid, body.id, body.key].filter(present);
+    if (this.options.devAuth ?? process.env.GAME_DEV_AUTH === '1') {
+      if (values.length !== 1) fail('Exactly one of uuid, id, or key must be provided');
+      return;
+    }
+    if (!present(ctx.query.time) || !present(ctx.query.hash)) fail('time and hash are required');
+    if (typeof body.token !== 'string' || !/^[a-z][0-9a-f]{32}$/i.test(body.token)) fail('token format error');
+    if (values.length !== 1) fail('Exactly one of uuid, id, or key must be provided');
     const expected = createHash('md5').update(`${body.token}${ctx.query.time}${values[0]}buj1aban.c0m`).digest('hex');
-    if (!this.equal(expected, ctx.query.hash)) throw new ApiError(400, 'hash error');
+    if (!this.equal(expected, ctx.query.hash)) fail('hash error');
   }
   playerFingerprint(ctx: Context): void {
     const data = ctx.req.method === 'GET' ? ctx.query : ctx.body;

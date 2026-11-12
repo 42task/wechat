@@ -3,11 +3,12 @@ import { ApiRouter } from '../src/core/router';
 import type { Context, Row, Services } from '../src/core/contracts';
 import { Integrations, registerIntegrations } from '../src/integrations/integrations';
 import { ApiError, errorPayload } from '../src/core/errors';
+import fixtures from './fixtures/wechat-platform-test-keys.json';
 
 function fixture() {
   const db = { one: vi.fn(async () => null), insert: vi.fn(async (_table: string, row: Row) => ({ id: 1, ...row })), update: vi.fn(async (_table: string, id: unknown, row: Row) => ({ id, ...row })) };
   const auth = { bearer: vi.fn(async () => ({ id: 1, nickname: 'before', avatar: 'a', role: 'user' })), role: vi.fn(async row => row), issue: vi.fn(() => ({ accessToken: 'test' })) };
-  const api = new Integrations({ appId: 'wx-test', appSecret: 'fake', bucket: 'configured-123', region: 'ap-shanghai', fetch: vi.fn() });
+  const api = new Integrations({ appId: 'wx-test', appSecret: 'fake', bucket: 'configured-123', region: 'ap-shanghai', platformKeys: { fixture: fixtures.platforms[0].certificate }, fetch: vi.fn() });
   const session = vi.spyOn(api, 'codeSession').mockResolvedValue({ openid: 'o', unionid: 'u' });
   const federation = vi.spyOn(api, 'federationToken').mockResolvedValue({ Credentials: {} });
   const router = new ApiRouter(); registerIntegrations(router, { db, auth, integrations: api } as unknown as Services);
@@ -42,13 +43,31 @@ describe('current Yii integration action binding and response contracts', () => 
     f.api.config.bucket = undefined; f.api.config.region = undefined;
     for (const version of ['v1', 'v2']) expect(await f.call('GET', `/${version}/tencent-cloud/cloud`)).toEqual({ bucket: false, region: false });
   });
-  it('returns false for an unconfigured payment application identifier', async () => {
+  it('returns false for an absent app identifier after payment application initialization', async () => {
     const f = fixture(); f.api.config.appId = undefined;
     expect(await f.call('GET', '/v1/wechat-pay/info')).toBe(false);
+  });
+  it('retains source payApp initialization errors for both info actions without making unrelated cloud metadata fail', async () => {
+    const f = fixture(); f.api.config.platformKeys = {};
+    for (const path of ['/v1/we-chat/info', '/v1/wechat-pay/info']) {
+      try { await f.call('GET', path); throw Error('Expected payment application configuration error'); }
+      catch (error) { expect(errorPayload(error)).toEqual({ status: 500, body: { name: 'Invalid Configuration', message: 'WeChat Pay verification key ID and path are required.', code: 0, type: 'yii\\base\\InvalidConfigException' } }); }
+    }
+    expect(await f.call('GET', '/v1/tencent-cloud/cloud')).toEqual({ bucket: 'configured-123', region: 'ap-shanghai' });
   });
   it('binds required COS object key before inspecting provider configuration', async () => {
     const f = fixture();
     await expect(f.call('GET', '/v1/q-cloud/object-url')).rejects.toMatchObject({ status: 400, message: 'Missing required parameters: key' });
+  });
+  it('preserves the legacy valid-key QCloud failure without storage traffic or database writes', async () => {
+    const f = fixture();
+    const objectUrl = vi.spyOn(f.api, 'objectUrl');
+    try { await f.call('GET', '/v1/q-cloud/object-url', {}, { key: 'fixture/movie.mp4' }); throw Error('Expected source failure'); }
+    catch (error) { expect(errorPayload(error)).toEqual({ status: 500, body: { name: 'Exception', message: 'Call to undefined method app\\modules\\v1\\models\\File::Create()', code: 0, type: 'Error' } }); }
+    expect(objectUrl).not.toHaveBeenCalled();
+    expect(f.db.one).not.toHaveBeenCalled();
+    expect(f.db.insert).not.toHaveBeenCalled();
+    expect(f.db.update).not.toHaveBeenCalled();
   });
   it('v2 token ignores caller bucket and region while v1 requires bucket and defaults its region', async () => {
     const f = fixture();

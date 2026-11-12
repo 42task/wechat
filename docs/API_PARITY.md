@@ -1,4 +1,4 @@
-# HTTP 路由对照
+# HTTP 路由对照（2026-11-12 更新）
 
 本清单从冻结的 Yii2 源码独立生成，再与 `createRouter(createServices())` 的实际注册表比较。它用于防止迁移漏掉原有入口，不把新实现的路由反过来当作旧接口依据。
 
@@ -6,7 +6,7 @@
 
 ## 来源与生成方法
 
-- 冻结源：`/private/tmp/wechat-current-game-baseline`；其文件哈希与本仓库 [source-manifest.json](source-manifest.json) 对照。原后端、前端、小程序和部署文件均不在本次生成过程中修改。
+- 原始清单从冻结源生成；本轮重新对照当前 `game@74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b`，212 个 PHP 源文件哈希均通过新鲜度核对。原 Yii 源码、小程序和管理前端未改动。
 - 配置来源：冻结的 `files/api/config/web.php` 中 `urlManager.rules`。只提取这个字面数组，不加载数据库、微信或部署配置。
 - 用原项目只读安装的 Yii2 `yii\rest\UrlRule` 展开每个 REST 规则。清单记录 Yii 版本，以及 `UrlRule.php`、`OptionsAction.php` 的 SHA-256；新仓库检查和运行均不依赖 PHP 或旧项目 vendor。
 - 内联 `actionXxx` 通过 Reflection 核对；外部 action 来自不执行构造函数的控制器 `actions()` 映射。没有运行任何业务 action、鉴权过滤器、数据库查询或外部请求。
@@ -20,9 +20,9 @@
 
 | 项目 | method/path 对数 |
 | --- | ---: |
-| 原配置展开后的全部声明 | 488 |
-| 能解析到 action | 249 |
-| 其中业务、诊断及默认 REST action | 183 |
+| 原配置展开后的全部声明 | 489 |
+| 能解析到 action | 250 |
+| 其中业务、诊断及默认 REST action | 184 |
 | 其中 OptionsAction 与方法兜底 | 66 |
 | 控制器存在但 action 不存在，原为 404 | 223 |
 | 控制器不存在，原为 404 | 16 |
@@ -38,6 +38,7 @@
 | 源行为域 | 对数 | 相关测试 |
 | --- | ---: | --- |
 | 后台 JWT、刷新/撤销、扫码票据及设备删除 | 14 | `admin.test.ts`、`integration/http.test.ts` |
+| 管理后台设备图片预览 | 1 | `admin-created-at.test.ts`、`admin-image-parity.test.ts` |
 | 健康检查 | 2 | `integration/http.test.ts` |
 | Swagger Basic Auth | 2 | `integration/http.test.ts` |
 | v1 玩家认证 | 4 | `v1-contracts.test.ts` |
@@ -73,9 +74,9 @@ Yii 的 OptionsAction 对 OPTIONS 返回 200，其他兜底方法返回 405，�
 
 | 入口 | 冻结源行为 | 新行为 |
 | --- | --- | --- |
-| `GET /v1/q-cloud/object-url` | 调用不存在的 v1 `File::Create`，执行失败 | 真实 COS 签名，返回 `{url,method,expires}` |
-| `GET /v1/we-chat/info` | 返回 SDK application 对象，没有稳定的数据响应 | 仅公开 `app_id` / `mch_id` |
 | `GET /v1/helper/print`、`GET /v1/local/test` 的共享诊断记录 | 记录及回显请求结构时可能包含凭据 | 保持 payload 结构并使用共享 Redis；`Authorization` / `Cookie` / `Set-Cookie` 等敏感头以及具名顶层凭据字段脱敏 |
+
+本轮按现有 Yii 合同恢复 `/v1/q-cloud/object-url` 合法 key 输入下的公开 500 错误，保留其无写入行为；不再把它扩展为新增签名入口。`/v1/we-chat/info` 会先构造原支付 SDK：配置有效时返回 `{}`，缺少验证材料时返回原配置异常。未发布的 v2 info/code 入口保持 404。供应商传输在本地测试中使用明确的替身；真实供应商验收仍须单独完成。
 
 已恢复的行为不列为差异：Swagger 的 Basic Auth；已有 applet 经公共 server 路径更新时原有的签名认证边界；文件删除 action 的原 404；REST 方法兜底。
 
@@ -99,7 +100,7 @@ node --require tsx/cjs scripts/check-parity.ts
 
 以下情况退出非零：源哈希不一致、清单证据或测试映射缺失、可解析源路由遗漏、未解释地将源 404 改为接口、存在未解释的额外注册，或五条未声明 HEAD 及两条未发布微信入口负例出现 handler / OptionsAction 兜底。缺失项必须修复或明确报告，不能删除清单项目凑齐。
 
-当前结构检查结果为 249 / 249：183 项业务及 REST action、66 项 OptionsAction / 方法兜底均有对应处理；全部 239 条源 404 声明保留。五条未声明 HEAD 及两条未发布微信入口负例保持 404。不存在遗漏或未解释的额外注册。
+当前结构检查结果为 250 / 250：184 项业务及 REST action、66 项 OptionsAction / 方法兜底均有对应处理；全部 239 条源 404 声明保留。五条未声明 HEAD 及两条未发布微信入口负例保持 404。不存在遗漏或未解释的额外注册。
 
 这不替代真实 MySQL / Redis、微信真机、商户支付配置、COS、Y1 和生产入口验收，也不证明每条响应内容已经与旧运行环境完全相同。
 
@@ -107,7 +108,7 @@ node --require tsx/cjs scripts/check-parity.ts
 
 管理认证已跟随当前 game 改为独立 ES256 Bearer JWT，共用 Yii 的 Redis key/记录与刷新 CAS，支持既有 PHP 令牌的单 audience 编码。密码变更、微信用户删除、设备 control 撤销实时生效；扫码 owner proof 与共享锁沿用现有客户端。
 
-当前基线还包含源工作区尚未提交的设备 version 上报逻辑：每次 UUID 上报校验并同步 version，省略为 0，范围 0..2147483647，更新不改变设备 updated_at。v1 数值校验和 version 排序、v2 嵌套 fields 通配符、旧支付 PEM/路径配置及手机号错误包装有专门回归用例。
+当前基线包含设备 version 上报逻辑：每次 UUID 上报校验并同步 version，省略为 0，范围 0..2147483647，更新不改变设备 updated_at。v1 数值校验和 version 排序、v2 嵌套 fields 通配符、旧支付 PEM/路径配置及手机号错误包装有专门回归用例。
 
 当前文件接口按当前用户归属读取，保留旧 NULL user_id + unionid 的归属回退；POST 集合与 PUT/PATCH/DELETE 单项按当前 Yii 返回 404。v2 文件下单仅从已归属文件的已知正数价格生成订单，微信查单与签名回调确认付款主体、商户、币种、金额和附件后解锁。源当前已移除回调 Bearer，Node 与其一致。
 

@@ -15160,14 +15160,6 @@
   ],
   "knownDifferences": [
     {
-      "id": "qcloud-broken-action",
-      "method": "GET",
-      "path": "/v1/q-cloud/object-url",
-      "source": "resolvable method calling undefined File::Create",
-      "target": "{url,method,expires} with real COS presigning",
-      "reason": "Repair of a source action that failed before producing a valid response."
-    },
-    {
       "id": "diagnostic-redaction",
       "method": "GET",
       "path": "/v1/helper/print",

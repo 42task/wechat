@@ -3,6 +3,7 @@ import { HttpException } from '@nestjs/common';
 import { ApiRouter } from '../src/core/router';
 import type { Context, Row, Services } from '../src/core/contracts';
 import { Integrations, registerIntegrations } from '../src/integrations/integrations';
+import fixtures from './fixtures/wechat-platform-test-keys.json';
 
 function setup(result: Row = { openid: 'provider-openid', unionid: 'provider-union' }) {
   const users: Row[] = [];
@@ -17,7 +18,7 @@ function setup(result: Row = { openid: 'provider-openid', unionid: 'provider-uni
     refresh: vi.fn(async () => ({ accessToken: 'new-access', refreshToken: 'new-refresh', expires: '2026/01/01 00:00:00' })),
     bearer: vi.fn(async () => users[0] || { id: 1, nickname: 'nick', avatar: 'avatar', tel: null, role: 'user' }),
   };
-  const integrations = new Integrations({ appId: 'wx-test', appSecret: 'test-secret', fetch: async () => Response.json(result) });
+  const integrations = new Integrations({ appId: 'wx-test', appSecret: 'test-secret', platformKeys: { fixture: fixtures.platforms[0].certificate }, fetch: async () => Response.json(result) });
   const services = { db, auth, integrations } as unknown as Services;
   const router = new ApiRouter();
   registerIntegrations(router, services);

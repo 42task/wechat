@@ -2,33 +2,43 @@ import type { Context, Row, Services } from '../core/contracts';
 import { ApiError } from '../core/errors';
 import { hasDecodedJson, markJsonDecoded } from '../core/json';
 import { yiiObject } from '../core/serialization';
+import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpValuesEqual, type PhpNumberType } from '../core/php';
 
 type Resource = 'device' | 'setup' | 'file';
 const columns: Record<Resource, string[]> = {
-  device: ['id', 'version', 'uuid', 'tag', 'created_at', 'updated_at', 'ip'],
+  device: ['id', 'version', 'uuid', 'tag', 'created_at', 'updated_at', 'ip', 'shop_id'],
   setup: ['id', 'money', 'slogans', 'pictures', 'thumbs', 'title', 'scene_id', 'device_id', 'shots', 'updated_at'],
   file: ['id', 'unionid', 'key', 'type', 'md5', 'size', 'bucket', 'created_at', 'unlocked', 'title', 'user_id', 'price'],
 };
 const writable: Record<Resource, string[]> = {
-  device: columns.device.filter(k => !['id', 'version'].includes(k)),
+  device: columns.device.filter(k => !['id', 'version', 'shop_id'].includes(k)),
   setup: columns.setup.filter(k => k !== 'id'),
   file: columns.file.filter(k => k !== 'id'),
 };
 const jsonColumns = new Set(['slogans', 'pictures', 'thumbs', 'shots']);
+const integerColumns = (resource: Resource): string[] => resource === 'setup' ? ['scene_id', 'device_id'] : resource === 'file' ? ['size', 'unlocked', 'user_id', 'price'] : [];
 const assignedAttributes = new WeakMap<Row, Row>();
+function legacyResourceError(name:string,message:string,type:string,code=0):never {
+  const error=new ApiError(500,message);
+  error.responseBody={name,message,code,type};
+  throw error;
+}
 export const sqlNow = () => new Intl.DateTimeFormat('sv-SE', { timeZone: process.env.TZ || 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date());
 export function csv(value: unknown): string[] { return typeof value === 'string' ? value.split(',').map(v => v.trim()).filter(Boolean) : []; }
 function nested(names: string[], key: string): string[] { return names.filter(n => n.startsWith(`${key}.`)).map(n => n.slice(key.length + 1)); }
 function rootNames(names: string[]): Set<string> { return new Set(names.map(n => n.split('.')[0])); }
-function decode(value: any): any { if (typeof value !== 'string') return value; try { return JSON.parse(value); } catch { return value; } }
-export function hydrate(row: Row): Row { return markJsonDecoded(hasDecodedJson(row) ? { ...row } : Object.fromEntries(Object.entries(row).map(([key, value]) => [key, jsonColumns.has(key) ? decode(value) : value]))); }
+function decode(value: any): any { if (typeof value !== 'string') return normalizePhpJson(value); try { return parsePhpJson(value); } catch { return value; } }
+export function hydrate(row: Row): Row { return markJsonDecoded(copyPhpMetadata(row, hasDecodedJson(row) ? { ...row } : Object.fromEntries(Object.entries(row).map(([key, value]) => [key, jsonColumns.has(key) ? decode(value) : value])))); }
 export function absoluteLocation(ctx: Context, path: string): string {
   return new URL(path, `${ctx.req.protocol || 'http'}://${ctx.req.get('host') || 'localhost'}`).toString();
 }
 export function denyAdministration(): never { throw new ApiError(403, '微信登录仅可配置关联设备，不可创建、删除或分配设备'); }
-export function bodyDeviceId(value: unknown): number {
-  if (!((typeof value === 'number' && Number.isSafeInteger(value) && value > 0) || (typeof value === 'string' && /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value))))) throw new ApiError(422, 'device_id 必须为有效设备编号');
-  return Number(value);
+export function bodyDeviceId(value: unknown, numberType?: PhpNumberType): number {
+  const integer = typeof value === 'number' && Number.isInteger(value) && value > 0 && numberType !== 'double'
+    && (numberType === 'integer' || value < Number(9223372036854775807n));
+  const digits = typeof value === 'string' && /^[1-9][0-9]*$/.exec(value)?.[0] === value;
+  if (!integer && !digits) throw new ApiError(422, 'device_id 必须为有效设备编号');
+  return typeof value === 'string' ? phpInt(value) : value as number;
 }
 export async function controlledDevice(s: Services, user: Row, id: any): Promise<Row> {
   const row = await s.db.one('SELECT * FROM device WHERE id IN (SELECT device_id FROM control WHERE user_id = ?) AND id = ?', [user.id, id]);
@@ -47,7 +57,8 @@ async function publicUser(s: Services, row: Row, fields: string[]): Promise<Row>
   if (row.role !== role) await s.db.execute('UPDATE user SET role = ? WHERE id = ?', [role,row.id]);
   const requested = rootNames(fields);
   const allowed = fields.length && !requested.has('*') ? requested : new Set(['id', 'tel', 'nickname', 'avatar', 'role']);
-  return Object.fromEntries(['id', 'tel', 'nickname', 'avatar', 'role'].filter(key => allowed.has(key)).map(key => [key, key === 'role' ? role : row[key] ?? null]));
+  const entries=['id', 'tel', 'nickname', 'avatar', 'role'].filter(key => allowed.has(key)).map(key => [key, key === 'role' ? role : row[key] ?? null]);
+  return copyPhpMetadata(row,entries.length ? Object.fromEntries(entries) : []);
 }
 export async function serialize(s: Services, resource: Resource, row: Row, query: Row = {}): Promise<Row> {
   row = hydrate(row);
@@ -69,7 +80,7 @@ export async function serialize(s: Services, resource: Resource, row: Row, query
       output.admin = await Promise.all(users.filter((user): user is Row => Boolean(user)).map(user => publicUser(s, user, nested(fields, 'admin'))));
     }
   }
-  return output;
+  return copyPhpMetadata(row,Object.keys(output).length ? output : []);
 }
 export async function paginate(s: Services, ctx: Context, resource: Resource, user?: Row, manage = false, options: { where?: string[]; params?: any[]; headers?: boolean } = {}): Promise<Row[]> {
   const where: string[] = [...options.where || []], params: any[] = [...options.params || []];
@@ -77,6 +88,9 @@ export async function paginate(s: Services, ctx: Context, resource: Resource, us
   // ActiveController's ordinary index does not apply search-model filters.
   if (manage) {
     const filters: Row = typeof ctx.query.DeviceSearch === 'object' && ctx.query.DeviceSearch ? ctx.query.DeviceSearch : {};
+    // DeviceSearch declares the inherited read-only setup relation as safe.
+    // Yii's load() throws before validation or any search query can run.
+    if (Object.hasOwn(filters,'setup') || Object.hasOwn(ctx.query,'DeviceSearch[setup]')) legacyResourceError('Exception','Setting read-only property: app\\modules\\v2\\models\\DeviceSearch::setup','yii\\base\\InvalidCallException');
     const id = filters.id ?? ctx.query['DeviceSearch[id]'];
     const emptyId = id === undefined || id === null || id === '' || Array.isArray(id) && id.length === 0;
     const validId = emptyId || (typeof id === 'string' || typeof id === 'number') && /^[+-]?\d+$/.test(String(id));
@@ -93,10 +107,12 @@ export async function paginate(s: Services, ctx: Context, resource: Resource, us
   const count = await s.db.one(`SELECT COUNT(*) AS total FROM ${resource}${suffix}`, params);
   const total = Number(count?.total || 0);
   const rawSize = ctx.query['per-page'] ?? 20;
-  const pageSize = Math.max(1, Math.min(50, Number.isFinite(Number(rawSize)) ? Math.trunc(Number(rawSize)) : 20));
+  // Yii casts an explicitly supplied nonnumeric page size to zero, then applies
+  // its lower limit. Only an absent value uses the default page size.
+  const pageSize = Math.max(1, Math.min(50, phpInt(rawSize)));
   const pageCount = Math.ceil(total / pageSize);
-  const rawPage = Math.trunc(Number(ctx.query.page || 1));
-  const page = Math.max(1, Math.min(Number.isFinite(rawPage) ? rawPage : 1, pageCount || 1));
+  const rawPage = phpInt(ctx.query.page ?? 1);
+  const page = Math.max(1, Math.min(rawPage, pageCount || 1));
   const sorts = csv(ctx.query.sort).map(value => ({ key: value.replace(/^-/, ''), direction: value.startsWith('-') ? 'DESC' : 'ASC' })).filter(({ key }) => columns[resource].includes(key)).slice(0, 1);
   const ordering: Record<string, string> = resource === 'file' ? { id: 'DESC' } : {};
   for (const sort of sorts) ordering[sort.key] = sort.direction;
@@ -119,8 +135,9 @@ function validationFailure(errors: { field: string; message: string }[]): never 
   throw error;
 }
 export async function validate(s: Services, resource: Resource, body: Row, current?: Row): Promise<Row> {
-  const data = Object.fromEntries(Object.entries(body).filter(([key]) => writable[resource].includes(key)));
-  const assigned={...data};
+  body = normalizePhpJson(body);
+  const data = copyPhpMetadata(body, Object.fromEntries(Object.entries(body).filter(([key]) => writable[resource].includes(key))));
+  const assigned=copyPhpMetadata(data,{...data});
   const errors: { field: string; message: string }[] = [];
   const hasError = (field: string) => errors.some(error => error.field === field);
   const error = (field: string, message: string) => { if (!hasError(field)) errors.push({ field, message }); };
@@ -129,10 +146,10 @@ export async function validate(s: Services, resource: Resource, body: Row, curre
     const key = Object.hasOwn(data, 'key') ? data.key : current?.key;
     if (key === undefined || key === null || typeof key === 'string' && !key.trim() || Array.isArray(key) && key.length === 0) error('key', 'Key cannot be blank.');
   }
-  const integers = resource === 'setup' ? ['scene_id', 'device_id'] : resource === 'file' ? ['size', 'unlocked', 'user_id', 'price'] : [];
+  const integers = integerColumns(resource);
   for (const field of integers) if (data[field] !== undefined && data[field] !== null && data[field] !== '') {
     if (Array.isArray(data[field]) && data[field].length === 0) data[field] = 0;
-    if (!(typeof data[field] === 'number' && Number.isInteger(data[field])) && !(typeof data[field] === 'string' && /^[+-]?\d+$/.test(data[field]))) error(field, `${label(field)} must be an integer.`);
+    if (!phpIntegerValid(data[field],phpNumberType(data,field))) error(field, `${label(field)} must be an integer.`);
   }
   if (resource === 'file' && !hasError('price') && data.price !== undefined && data.price !== null && data.price !== '' && Number(data.price) < 0) error('price', 'Price must be no less than 0.');
   if (resource === 'setup' && data.money !== undefined && data.money !== null && data.money !== '') {
@@ -141,6 +158,7 @@ export async function validate(s: Services, resource: Resource, body: Row, curre
   }
   const strings = resource === 'device' ? ['uuid', 'tag', 'ip'] : resource === 'setup' ? ['title'] : ['unionid', 'key', 'type', 'md5', 'bucket', 'title'];
   for (const field of strings) if (!hasError(field) && data[field] !== undefined && data[field] !== null) {
+    if (Array.isArray(data[field]) && data[field].length === 0) continue;
     if (typeof data[field] !== 'string') error(field, `${label(field)} must be a string.`);
     else if ([...data[field]].length > 255) error(field, `${label(field)} should contain at most 255 characters.`);
   }
@@ -153,14 +171,28 @@ export async function validate(s: Services, resource: Resource, body: Row, curre
   if (resource === 'file' && !hasError('user_id') && data.user_id !== undefined && data.user_id !== null && data.user_id !== '' && !await s.db.one('SELECT * FROM user WHERE id = ?', [data.user_id])) error('user_id', 'User ID is invalid.');
   if (errors.length) validationFailure(errors);
   for (const field of [...integers,...resource === 'setup' ? ['money'] : []]) if (data[field] === '') data[field]=null;
-  if (resource !== 'file') data.updated_at = sqlNow();
   assignedAttributes.set(data,assigned);
   return data;
 }
 export async function saveResource(s: Services, resource: Resource, data: Row, current?: Row): Promise<Row> {
   try {
-    const saved=current ? await s.db.update(resource, current.id, data) : await s.db.insert(resource, data);
-    const response:Row={...current,...assignedAttributes.get(data) ?? data,id:saved.id};
+    const assigned = assignedAttributes.get(data) ?? data;
+    // Yii compares the assigned values strictly and skips TimestampBehavior and
+    // UPDATE altogether when no safe attribute changed. In particular, [] and
+    // JSON objects retain their types, while numeric strings can still be dirty.
+    const dirty = !current || Object.entries(assigned).some(([key, value]) => !Object.hasOwn(current, key) || !phpValuesEqual(value, current[key], phpNumberType(assigned,key), phpNumberType(current,key) ?? (resource==='setup' && key==='money' && typeof current[key]==='number' ? 'double' : undefined)));
+    if (current && !dirty) return markJsonDecoded(copyPhpMetadata(assigned,copyPhpMetadata(current,{ ...current, ...assigned })));
+    const strings=resource === 'device' ? ['uuid','tag','ip'] : resource === 'setup' ? ['title'] : ['unionid','key','type','md5','bucket','title'];
+    // Yii skips optional-empty StringValidator values, then raises this warning
+    // while casting the array to a SQL string. No UPDATE has executed yet.
+    if (strings.some(field=>Array.isArray(data[field]))) legacyResourceError('PHP Warning','Array to string conversion','yii\\base\\ErrorException',2);
+    const persisted = copyPhpMetadata(data,{ ...data });
+    for (const field of integerColumns(resource)) if (persisted[field] !== undefined && persisted[field] !== null) persisted[field] = phpInt(persisted[field]);
+    // Database insert/update emits SQL NOW(), like Yii's TimestampBehavior,
+    // instead of generating a value in the Node process's timezone.
+    if (resource !== 'file') delete persisted.updated_at;
+    const saved=current ? await s.db.update(resource, current.id, persisted) : await s.db.insert(resource, persisted);
+    const response:Row=copyPhpMetadata(assigned,copyPhpMetadata(current ?? {},{...current,...assigned,id:saved.id}));
     if (resource !== 'file') response.updated_at=yiiObject('Expression',{expression:'NOW()',params:[]});
     return markJsonDecoded(response);
   }

@@ -1,0 +1,1036 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "微信小程序后端 API (v2)",
+    "description": "游戏娱乐管理系统 RESTful API 文档",
+    "version": "2.0.0"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "API Server"
+    }
+  ],
+  "paths": {
+    "/v2/applet/refresh": {
+      "post": {
+        "tags": [
+          "小程序"
+        ],
+        "summary": "刷新小程序状态",
+        "operationId": "2035b90f063e4da886f98064ff676701",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/devices/manage": {
+      "get": {
+        "tags": [
+          "设备"
+        ],
+        "summary": "设备管理列表",
+        "operationId": "47b18d9c3ea353387ac0f755bb927847",
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "列表数据"
+          }
+        }
+      }
+    },
+    "/v2/devices/{device_id}/assign/{user_id}": {
+      "delete": {
+        "tags": [
+          "设备"
+        ],
+        "summary": "取消分配",
+        "operationId": "13ef069d1015f0a9eaddc57ca202c37e",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/devices/{device_id}/assign": {
+      "post": {
+        "tags": [
+          "设备"
+        ],
+        "summary": "分配设备给用户",
+        "operationId": "c3d45a02162c1c8122048af2c49a7cbd",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "phone": {
+                    "description": "用户手机号",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/files/list": {
+      "get": {
+        "tags": [
+          "文件"
+        ],
+        "summary": "获取文件列表",
+        "operationId": "098814040f9bff1fdc7e2a150b4f7428",
+        "parameters": [
+          {
+            "name": "unionid",
+            "in": "query",
+            "description": "兼容旧客户端；文件归属始终使用当前登录账号",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件列表"
+          }
+        }
+      }
+    },
+    "/v2/server/file": {
+      "post": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "文件上传/刷新",
+        "operationId": "85ca82de78b36887ece899929825aedc",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "key": {
+                    "description": "文件 Key",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/server/applet": {
+      "post": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "小程序刷新",
+        "operationId": "d0d06ab846ea129aacb1f9a0c53ea4bc",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "id": {
+                    "description": "小程序 ID",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/server/device": {
+      "post": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "设备刷新",
+        "operationId": "ffa0087848579b67f9956b5390b05404",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "uuid": {
+                    "description": "设备 UUID",
+                    "type": "string"
+                  },
+                  "version": {
+                    "description": "设备版本号；省略时更新为 0",
+                    "type": "integer",
+                    "format": "int32",
+                    "default": 0,
+                    "maximum": 2147483647,
+                    "minimum": 0
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/server/refresh": {
+      "get": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "获取刷新状态",
+        "operationId": "de8a9568fa369edd6b5189e5b3fbec03",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "触发刷新",
+        "operationId": "0f99582208e7d696b0d75f3f52f378b5",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "version": {
+                    "description": "随设备 UUID 上报的版本号；省略时更新为 0",
+                    "type": "integer",
+                    "format": "int32",
+                    "default": 0,
+                    "maximum": 2147483647,
+                    "minimum": 0
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/server/info": {
+      "get": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "获取服务器信息",
+        "operationId": "8c9004e35e9f60d209163453bb537327",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "query",
+            "description": "设备 UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "设备版本号；省略时按 0 处理，与数据库版本不同时更新",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0,
+              "maximum": 2147483647,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功"
+          },
+          "400": {
+            "description": "设备版本号无效"
+          }
+        }
+      }
+    },
+    "/v2/server/log": {
+      "get": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "获取日志",
+        "operationId": "c5ab21cdab1515c3e810983f88ee0c32",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "description": "Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/server/scenes": {
+      "get": {
+        "tags": [
+          "服务器"
+        ],
+        "summary": "获取场景列表（转发外部接口）",
+        "operationId": "14e5ca62b16ceea2c59172d9ef378236",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/site/refresh-token": {
+      "post": {
+        "tags": [
+          "认证"
+        ],
+        "summary": "刷新访问令牌",
+        "description": "使用 refreshToken 获取新的访问令牌",
+        "operationId": "1ba04ec34cae72a67a86afe3c50f3ba0",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "refreshToken": {
+                    "description": "刷新令牌",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "刷新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "properties": {
+                        "token": {
+                          "properties": {
+                            "accessToken": {
+                              "type": "string"
+                            },
+                            "expires": {
+                              "type": "string"
+                            },
+                            "refreshToken": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/site/login": {
+      "post": {
+        "tags": [
+          "认证"
+        ],
+        "summary": "微信小程序登录",
+        "description": "使用微信 code 进行登录，获取访问令牌",
+        "operationId": "25e77f143e37eebc073469dd58c43dba",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "description": "微信 wx.login 返回的 code",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "properties": {
+                        "token": {
+                          "type": "object"
+                        },
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "openid": {
+                          "type": "string"
+                        },
+                        "unionid": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "code is required"
+          }
+        }
+      }
+    },
+    "/v2/tencent-cloud/cloud": {
+      "get": {
+        "tags": [
+          "腾讯云"
+        ],
+        "summary": "获取云配置",
+        "operationId": "35b4a845ad772e28f945a9cc7e9741c7",
+        "responses": {
+          "200": {
+            "description": "配置信息"
+          }
+        }
+      }
+    },
+    "/v2/tencent-cloud/store": {
+      "get": {
+        "tags": [
+          "腾讯云"
+        ],
+        "summary": "获取存储凭证",
+        "operationId": "33292cb00dad07549eb13b3ede50ccbb",
+        "responses": {
+          "200": {
+            "description": "临时密钥"
+          }
+        }
+      }
+    },
+    "/v2/tencent-cloud/token": {
+      "get": {
+        "tags": [
+          "腾讯云"
+        ],
+        "summary": "获取 STS Token (内部)",
+        "operationId": "0cd3c146a746cf79c82ff433cffac009",
+        "responses": {
+          "200": {
+            "description": "Token对象"
+          }
+        }
+      }
+    },
+    "/v2/wechat/profile": {
+      "post": {
+        "tags": [
+          "微信"
+        ],
+        "summary": "更新用户资料",
+        "description": "更新当前登录用户的头像和昵称",
+        "operationId": "747ed272b2162e9a40ddd9ce210e76b9",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "avatar": {
+                    "description": "头像 URL",
+                    "type": "string"
+                  },
+                  "nickname": {
+                    "description": "昵称",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    },
+    "/v2/wechat/bind-phone": {
+      "post": {
+        "tags": [
+          "微信"
+        ],
+        "summary": "绑定手机号",
+        "description": "使用微信 getPhoneNumber 返回的 code 绑定手机号",
+        "operationId": "6c7cc3d2b518011dbdc8f458ce03eab3",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "description": "小程序 getPhoneNumber 返回的 code",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "绑定成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "properties": {
+                        "user": {
+                          "$ref": "#/components/schemas/User"
+                        },
+                        "phone": {
+                          "type": "string"
+                        },
+                        "purePhone": {
+                          "type": "string"
+                        },
+                        "countryCode": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "绑定失败"
+          }
+        },
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    },
+    "/v2/wechat-pay/wxpay-order": {
+      "post": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "小程序支付下单",
+        "description": "小程序支付下单接口",
+        "operationId": "5b2eb55edfef93f9fe8c4c53860b056e",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "required": [
+                  "file_id",
+                  "out_trade_no"
+                ],
+                "properties": {
+                  "file_id": {
+                    "description": "当前账号的文件ID",
+                    "type": "integer"
+                  },
+                  "openid": {
+                    "description": "用户 OpenID",
+                    "type": "string"
+                  },
+                  "out_trade_no": {
+                    "description": "商户订单号",
+                    "type": "string"
+                  },
+                  "amount": {
+                    "description": "金额(分)",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "description": "商品描述",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "下单成功"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/notify": {
+      "get": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "支付结果通知(GET)",
+        "operationId": "879b459af54fb298194a6ba332c7b1dd",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "支付结果通知",
+        "description": "支付通知回调",
+        "operationId": "edbb1ff6d3ffb09403b69aaaa338d478",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/wxpay-query-order-by-out-trade-no": {
+      "get": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "查询订单(按商户单号)",
+        "description": "根据商户订单号查询微信支付订单",
+        "operationId": "edd189fb86a1151cf00eb0b6c25e2324",
+        "parameters": [
+          {
+            "name": "out_trade_no",
+            "in": "query",
+            "description": "商户订单号",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询结果"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/wxpay-refund": {
+      "post": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "申请退款",
+        "description": "申请退款",
+        "operationId": "bcf50bbf2d1b9b6ce9fb00e67e76d9ed",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "out_trade_no": {
+                    "description": "商户订单号",
+                    "type": "string"
+                  },
+                  "out_refund_no": {
+                    "description": "商户退款单号",
+                    "type": "string"
+                  },
+                  "refund_amount": {
+                    "description": "退款金额(分)",
+                    "type": "integer"
+                  },
+                  "total_amount": {
+                    "description": "订单总金额(分)",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "description": "退款原因",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "申请成功"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/wxpay-query-refund": {
+      "get": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "查询退款",
+        "description": "查询退款",
+        "operationId": "506ea5cc23c30eb85b664a13981e03ec",
+        "parameters": [
+          {
+            "name": "out_refund_no",
+            "in": "query",
+            "description": "商户退款单号",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询结果"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/refund-notify": {
+      "post": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "退款结果通知",
+        "description": "退款回调通知",
+        "operationId": "49fef0e7520e0d0e8faac846cd2fae44",
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/v2/wechat-pay/wxpay-query-order-by-transaction-id": {
+      "get": {
+        "tags": [
+          "微信支付"
+        ],
+        "summary": "查询订单(按微信单号)",
+        "description": "根据微信支付订单号查询订单",
+        "operationId": "5f027df015e8cc1f45faa47e01359ac8",
+        "parameters": [
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "description": "微信支付订单号",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询结果"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Applet": {
+        "title": "小程序实例",
+        "description": "小程序相关数据模型"
+      },
+      "Control": {
+        "title": "设备控制",
+        "description": "用户与设备的关联控制模型"
+      },
+      "Device": {
+        "title": "设备",
+        "description": "设备信息模型"
+      },
+      "DeviceSearch": {
+        "title": "设备搜索",
+        "description": "设备搜索模型",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Device"
+          }
+        ]
+      },
+      "File": {
+        "title": "文件",
+        "description": "文件与 COS 对象模型"
+      },
+      "FileSearch": {
+        "title": "文件搜索",
+        "description": "文件搜索模型",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/File"
+          }
+        ]
+      },
+      "RecodeFile": {
+        "title": "文件记录",
+        "description": "Redis 文件记录模型"
+      },
+      "Report": {
+        "title": "报告",
+        "description": "Redis 报告模型"
+      },
+      "Setup": {
+        "title": "设置",
+        "description": "设置信息模型"
+      },
+      "User": {
+        "required": [
+          "unionid"
+        ],
+        "properties": {
+          "id": {
+            "description": "用户ID",
+            "type": "integer"
+          },
+          "tel": {
+            "description": "手机号",
+            "type": "string"
+          },
+          "nickname": {
+            "description": "昵称",
+            "type": "string"
+          },
+          "avatar": {
+            "description": "头像URL",
+            "type": "string"
+          },
+          "role": {
+            "description": "用户角色",
+            "type": "string",
+            "enum": [
+              "user",
+              "manager",
+              "root"
+            ]
+          },
+          "openid": {
+            "description": "微信 OpenID",
+            "type": "string"
+          },
+          "unionid": {
+            "description": "微信 UnionID",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "Bearer": {
+        "type": "http",
+        "bearerFormat": "JWT",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "小程序",
+      "description": "小程序相关接口"
+    },
+    {
+      "name": "设备",
+      "description": "设备管理接口"
+    },
+    {
+      "name": "文件",
+      "description": "文件管理接口"
+    },
+    {
+      "name": "服务器",
+      "description": "服务器状态管理接口"
+    },
+    {
+      "name": "认证",
+      "description": "用户认证相关接口"
+    },
+    {
+      "name": "腾讯云",
+      "description": "腾讯云 COS/STS 相关接口"
+    },
+    {
+      "name": "微信",
+      "description": "微信相关接口"
+    },
+    {
+      "name": "微信支付",
+      "description": "微信支付相关接口"
+    }
+  ]
+}

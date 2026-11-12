@@ -4,12 +4,24 @@ import type { Database } from '../core/database';
 import { hasDecodedJson, markJsonDecoded } from '../core/json';
 import { ApiError } from '../core/errors';
 import { yiiObject } from '../core/serialization';
+import { copyPhpMetadata, normalizePhpJson, parsePhpJson, phpInt, phpIntegerValid, phpNumberType, phpValuesEqual } from '../core/php';
 
-export const nowSql = () => new Date().toLocaleString('sv-SE', {timeZone:'Asia/Shanghai'});
 export const fail = (status: number, message: string): never => { throw new ApiError(status, message, undefined, status === 400 ? 'HttpException' : undefined); };
 export const phpTruthy = (value:any):boolean => value !== undefined && value !== null && value !== '' && value !== false && value !== 0 && value !== '0' && !(typeof value === 'object' && Object.keys(value).length === 0);
 export const needed = (value: any, message: string): any => { if (!phpTruthy(value)) fail(400,message); return value; };
 export const valueOf = (ctx: Context, key: string): any => ctx.params[key] ?? ctx.query[key] ?? ctx.body[key];
+// Yii's REST Serializer accepts string lists and trims whitespace around commas.
+export const fieldNames = (value: unknown): string[] => typeof value === 'string' ? value.split(/\s*,\s*/).filter(Boolean) : [];
+export function selectFields(row: Row, fields: unknown): Row {
+  const names=fieldNames(fields).map(field => field.split('.')[0]);
+  if (!names.length || names.includes('*')) return row;
+  const entries=Object.entries(row).filter(([key]) => names.includes(key));
+  return copyPhpMetadata(row,entries.length ? Object.fromEntries(entries) : []);
+}
+const paginationInteger = (value: unknown, fallback: number): number => {
+  if (value === undefined || value === null || typeof value === 'object') return fallback;
+  return phpInt(value);
+};
 const label = (field: string): string => ({shop_id:'Shop ID',device_id:'Device ID',player_id:'Player ID',award_id:'Award ID',openId:'Openid',play_time:'Play Time'}[field] ?? field.charAt(0).toUpperCase()+field.slice(1));
 const definitions: Record<string, {fields:string[]; required?:string[]; integers?:string[]; numbers?:string[]; strings?:string[]; unique?:string[]; foreign?:Record<string,string>}> = {
   player:{fields:['tel','nickname','openId','avatar','info','recharge','give','cost','times','grade','points','created_at','updated_at'],required:['tel'],integers:['times','grade','points'],numbers:['recharge','cost','give'],strings:['tel','nickname','openId','avatar'],unique:['tel','openId']},
@@ -26,10 +38,16 @@ export class V1Models {
   async require(table: string, id: any, message: string, locked = false): Promise<Row> { return await this.find(table,id,locked) ?? fail(400,message); }
   async manager(playerId: any): Promise<Row | null> { return this.where('manager','player_id',playerId); }
   async operation(shopId: any): Promise<Row> { return await this.where('operation','shop_id',shopId) ?? await this.db.insert('operation',{shop_id:shopId}); }
-  async player(row: Row): Promise<Row> { return {...row,role:(await this.manager(row.id))?.type ?? 'player'}; }
+  async timestamp(): Promise<string> {
+    // TimestampBehavior stores the database's NOW(), not the Node host's zone.
+    const row=await this.db.one('SELECT CURRENT_TIMESTAMP AS currentTimestamp');
+    if (typeof row?.currentTimestamp !== 'string') fail(503,'Database timestamp is unavailable');
+    return row!.currentTimestamp;
+  }
+  async player(row: Row): Promise<Row> { return copyPhpMetadata(row,{...row,role:(await this.manager(row.id))?.type ?? 'player'}); }
   async serialize(table: string, row: Row, expand = '', fields = '', depth = 0): Promise<Row> {
-    const result = {...row};
-    if (!hasDecodedJson(row) && typeof result.game === 'string') { try { result.game=JSON.parse(result.game); } catch {} }
+    const result = copyPhpMetadata(row,{...row});
+    if (!hasDecodedJson(row) && typeof result.game === 'string') { try { result.game=parsePhpJson(result.game); } catch {} }
     if (table === 'device') {
       delete result.created_at; delete result.updated_at;
       result.status = row.shop_id == null ? 'unset' : (await this.where('record','device_id',row.id))?.status ?? 'unused';
@@ -37,10 +55,10 @@ export class V1Models {
     if (table === 'shop') {delete result.created_at;delete result.updated_at;}
     if (table === 'operation') {delete result.id;delete result.shop_id;}
     if (depth < 5) {
-      const specs = expand.split(',').filter(Boolean), names=[...new Set(specs.map(x => x.split('.')[0]))];
+      const specs = fieldNames(expand), names=[...new Set(specs.map(x => x.split('.')[0]))];
       for (const name of names) {
         const nested = specs.filter(x => x.startsWith(name+'.')).map(x => x.slice(name.length+1)).join(',');
-        const nestedFields = fields.split(',').filter(x => x.startsWith(name+'.')).map(x => x.slice(name.length+1)).join(',');
+        const nestedFields = fieldNames(fields).filter(x => x.startsWith(name+'.')).map(x => x.slice(name.length+1)).join(',');
         let value: any;
         if (table === 'player' && name === 'role') value=(await this.manager(row.id))?.type ?? 'player';
         if (table === 'record' && name === 'player') { const p=await this.find('player',row.player_id); value=p ? await this.player(p) : null; }
@@ -57,17 +75,21 @@ export class V1Models {
         if (value !== undefined) result[name]=value;
       }
     }
-    const rootFields=fields.split(',').map(field => field.split('.')[0]), rootExpands=expand.split(',').map(field => field.split('.')[0]);
-    if (fields && !rootFields.includes('*')) return Object.fromEntries(Object.entries(result).filter(([key]) => rootFields.includes(key) || rootExpands.includes(key)));
+    const rootFields=fieldNames(fields).map(field => field.split('.')[0]), rootExpands=fieldNames(expand).map(field => field.split('.')[0]);
+    if (rootFields.length && !rootFields.includes('*')) {
+      const entries=Object.entries(result).filter(([key]) => rootFields.includes(key) || rootExpands.includes(key));
+      return copyPhpMetadata(result,entries.length ? Object.fromEntries(entries) : []);
+    }
     return result;
   }
   async save(table: string, body: Row, previous?: Row, validationPrefix?: string, modelResponse = false): Promise<Row> {
     const spec=definitions[table]; if (!spec) fail(404,'Not Found');
-    const data=Object.fromEntries(Object.entries(body).filter(([key]) => spec.fields.includes(key)));
+    const input=normalizePhpJson(body);
+    const data=copyPhpMetadata(input,Object.fromEntries(Object.entries(input).filter(([key]) => spec.fields.includes(key))));
     const awardPrice=data.price === undefined ? previous?.price : data.price;
     if (table === 'award' && (awardPrice === undefined || awardPrice === null || awardPrice === '' || Array.isArray(awardPrice) && awardPrice.length === 0)) data.price=100;
-    const assigned={...data};
-    const merged={...previous,...data}, errors:Row[]=[];
+    const assigned=copyPhpMetadata(data,{...data});
+    const merged=copyPhpMetadata(data,copyPhpMetadata(previous ?? {},{...previous,...data})), errors:Row[]=[];
     const hasError=(field:string) => errors.some(error => error.field === field);
     const invalid=(field:string,message:string) => {if (!hasError(field)) errors.push({field,message});};
     const empty=(value:any) => value === undefined || value === null || value === '' || Array.isArray(value) && value.length === 0;
@@ -81,7 +103,7 @@ export class V1Models {
     for (const field of spec.integers ?? []) if (!hasError(field) && data[field] !== undefined && data[field] !== null && data[field] !== '') {
       // Yii skips optional empty arrays during validation, then casts numeric columns to zero.
       if (Array.isArray(data[field]) && data[field].length === 0) data[field]=0;
-      if (!['number','string'].includes(typeof data[field]) || !/^[+-]?\d+$/.test(String(data[field])) || !Number.isSafeInteger(Number(data[field]))) invalid(field,label(field)+' must be an integer.'); else data[field]=Number(data[field]);
+      if (!phpIntegerValid(data[field],phpNumberType(data,field))) invalid(field,label(field)+' must be an integer.'); else data[field]=phpInt(data[field]);
     }
     for (const field of spec.strings ?? []) if (!hasError(field) && data[field] != null) {
       if (typeof data[field] !== 'string') invalid(field,label(field)+' must be a string.');
@@ -101,14 +123,17 @@ export class V1Models {
     }
     for (const field of [...spec.integers ?? [],...spec.numbers ?? []]) if (data[field] === '') data[field]=null;
     if (table === 'device' && !previous) data.version=1;
-    // Yii TimestampBehavior writes timestamps regardless of incoming values.
-    if (['player','device','shop','record','gift'].includes(table)) {data.updated_at=nowSql();if (!previous) data.created_at=nowSql();}
+    // AttributeBehavior::skipUpdateOnClean preserves timestamps when an existing
+    // model is saved without changing any attributes (including system/give).
+    const dirty=!previous || Object.entries(assigned).some(([key,value]) => !phpValuesEqual(value,previous[key] ?? null,phpNumberType(assigned,key),phpNumberType(previous,key)));
+    if (!dirty) return modelResponse ? markJsonDecoded(copyPhpMetadata(assigned,copyPhpMetadata(previous!,{...previous,...assigned}))) : previous!;
+    if (['player','device','shop','record','gift'].includes(table)) {data.updated_at=await this.timestamp();if (!previous) data.created_at=data.updated_at;}
     const saved=previous ? await this.db.update(table,previous.id,data) : await this.db.insert(table,data);
     if (!modelResponse) return saved;
     // ActiveController returns the saved model without refresh(): request values
     // keep their types, unset database defaults stay absent, and SQL expressions
     // remain attributes until a later SELECT reloads the record.
-    const response:Row={...previous,...assigned,id:saved.id};
+    const response:Row=copyPhpMetadata(assigned,copyPhpMetadata(previous ?? {},{...previous,...assigned,id:saved.id}));
     if (table === 'device' && !previous) response.version=1;
     if (['player','device','shop','record','gift'].includes(table)) {
       response.updated_at=yiiObject('Expression',{expression:'NOW()',params:[]});
@@ -122,10 +147,9 @@ export class V1Models {
     if (filter && ctx.query[filter] != null) {conditions.push('`'+filter+'` = ?');args.push(ctx.query[filter]);}
     const where=conditions.length ? ' WHERE '+conditions.join(' AND ') : '';
     const total=Number((await this.db.one(`SELECT COUNT(*) AS total FROM \`${table}\`${where}`,args))?.total ?? 0);
-    const requestedSize=Number(ctx.query['per-page'] ?? 20);
-    const size=Number.isFinite(requestedSize) ? Math.max(1,Math.min(50,Math.floor(requestedSize))) : 20;
-    const pageCount=Math.ceil(total/size), requestedPage=Number(ctx.query.page ?? 1);
-    const page=Math.max(1,Math.min(Math.max(1,pageCount),Number.isFinite(requestedPage) ? Math.floor(requestedPage) : 1));
+    const size=Math.max(1,Math.min(50,paginationInteger(ctx.query['per-page'],20)));
+    const pageCount=Math.ceil(total/size), requestedPage=paginationInteger(ctx.query.page,1);
+    const page=Math.max(1,Math.min(Math.max(1,pageCount),requestedPage));
     let sort='';
     if (ctx.query.sort) {
       const allowed=(await this.db.columns(table)).map(column => column.name);
@@ -140,14 +164,18 @@ export class V1Models {
     const pageLink=(target:number) => {
       const url=new URL(ctx.req.originalUrl ?? '/v1/'+table,ctx.req.protocol+'://'+(ctx.req.get('host') ?? 'localhost'));
       for (const [key,value] of Object.entries(ctx.query)) url.searchParams.set(key,String(value));
+      if (size === 20) url.searchParams.delete('per-page'); else url.searchParams.set('per-page',String(size));
       url.searchParams.set('page',String(target));
       return url.toString();
     };
-    const links=[`<${pageLink(page)}>; rel=self`,`<${pageLink(1)}>; rel=first`,`<${pageLink(Math.max(1,pageCount))}>; rel=last`];
-    if (page>1) links.push(`<${pageLink(page-1)}>; rel=prev`);
-    if (page<pageCount) links.push(`<${pageLink(page+1)}>; rel=next`);
+    const links=[`<${pageLink(page)}>; rel=self`];
+    if (pageCount>0) {
+      links.push(`<${pageLink(1)}>; rel=first`,`<${pageLink(pageCount)}>; rel=last`);
+      if (page>1) links.push(`<${pageLink(page-1)}>; rel=prev`);
+      if (page<pageCount) links.push(`<${pageLink(page+1)}>; rel=next`);
+    }
     ctx.res.setHeader('Link',links.join(', '));
     const rows=await this.db.query(`SELECT * FROM \`${table}\`${where}${sort} LIMIT ? OFFSET ?`,[...args,size,(page-1)*size]);
-    return Promise.all(rows.map(row => this.serialize(table,row,String(ctx.query.expand ?? ''),String(ctx.query.fields ?? ''))));
+    return Promise.all(rows.map(row => this.serialize(table,row,typeof ctx.query.expand === 'string' ? ctx.query.expand : '',typeof ctx.query.fields === 'string' ? ctx.query.fields : '')));
   }
 }

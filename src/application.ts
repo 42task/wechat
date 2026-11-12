@@ -3,7 +3,7 @@ import { All, Controller, Inject, Module, Req, Res } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import express, { type Request, type Response } from 'express';
-import { parse as parseQuery } from 'qs';
+import { parsePhpJson, parsePhpParameters } from './core/php';
 import { dirname } from 'node:path';
 import { Database } from './core/database';
 import { adminRedisOptions, LegacyRedis } from './core/redis';
@@ -11,13 +11,14 @@ import { AuthService } from './core/auth';
 import { ApiRouter } from './core/router';
 import { ApiError, errorPayload } from './core/errors';
 import { xmlResponse } from './core/serialization';
-import type { Context, Services } from './core/contracts';
+import type { Context, Row, Services } from './core/contracts';
 import { SceneCatalog } from './admin/scenes';
 import { equal } from './admin/sessions';
 import { registerAdmin } from './admin';
 import { Integrations, registerIntegrations } from './integrations/integrations';
 import { registerV1 } from './v1';
 import { registerV2 } from './v2';
+import yiiOpenApi from './openapi/yii-v2.json';
 
 export function createServices(): Services {
   const db = new Database();
@@ -46,7 +47,11 @@ export function createRouter(s: Services): ApiRouter {
     const header = ctx.req.headers.authorization;
     let credentials = '';
     if (typeof header === 'string' && header.startsWith('Basic ')) credentials = Buffer.from(header.slice(6), 'base64').toString('utf8');
-    if (!equal(credentials, `${process.env.SWAGGER_USERNAME}:${process.env.SWAGGER_PASSWORD}`)) { ctx.res.setHeader('WWW-Authenticate', 'Basic realm="Swagger API Documentation"'); ctx.res.status(401).type('html').send('需要认证才能访问 API 文档'); return false; }
+    if (!equal(credentials, `${process.env.SWAGGER_USERNAME}:${process.env.SWAGGER_PASSWORD}`)) {
+      // PHP exits directly here, before Yii sends its buffered CORS headers.
+      for (const name of ctx.res.getHeaderNames()) if (String(name).toLowerCase().startsWith('access-control-')) ctx.res.removeHeader(name);
+      ctx.res.setHeader('WWW-Authenticate', 'Basic realm="Swagger API Documentation"'); ctx.res.status(401).type('html').send('需要认证才能访问 API 文档'); return false;
+    }
     return true;
   };
   router.add(['GET', 'HEAD'], '/health', async ctx => {
@@ -64,8 +69,10 @@ export function createRouter(s: Services): ApiRouter {
     const version = isoBuildTime ? new Date(Date.parse(buildTime!) + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ') : buildTime;
     return { status: healthy ? 'healthy' : 'unhealthy', timestamp: new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 19) + '+08:00', checks, ...(process.env.GIT_COMMIT ? { gitCommit: process.env.GIT_COMMIT } : {}), ...(version ? { version } : {}) };
   });
-  router.add('GET', '/swagger/json-schema', ctx => { if (!swaggerAuth(ctx)) return; return { openapi: '3.0.3', info: { title: 'gdgeek game compatible API', version: '1.0.0' }, paths: Object.fromEntries([...new Set(router.routes.map(route => route.path))].map(path => [path.replace(/:([a-z_]+)/g, '{$1}'), Object.fromEntries(router.routes.filter(route => route.path === path && route.method !== 'HEAD').map(route => [route.method.toLowerCase(), { summary: `${route.method} ${path}`, parameters: [...path.matchAll(/:([a-z_]+)/g)].map(match => ({ name: match[1], in: 'path', required: true, schema: { type: 'string' } })), responses: { 200: { description: 'Legacy-compatible response' } } }]))])) }; });
-  router.add('GET', '/swagger', ctx => { if (!swaggerAuth(ctx)) return; ctx.res.type('html'); return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>API 文档</title><link rel="stylesheet" href="/swagger-ui/swagger-ui.css"></head><body style="margin:0"><div id="swagger-ui"></div><script src="/swagger-ui/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:"/swagger/json-schema",dom_id:"#swagger-ui",deepLinking:true})</script></body></html>'; });
+  // Keep the source annotation contract, rather than inventing a second schema
+  // from the Node router. This snapshot is also checked against live Yii.
+  router.add('GET', '/swagger/json-schema', ctx => { if (!swaggerAuth(ctx)) return; return yiiOpenApi; });
+  router.add('GET', '/swagger', ctx => { if (!swaggerAuth(ctx)) return; ctx.res.type('html'); return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>API 文档 - Swagger UI</title><link rel="stylesheet" href="/swagger-ui/swagger-ui.css"></head><body style="margin:0"><div id="swagger-ui"></div><script src="/swagger-ui/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:"/swagger/json-schema",dom_id:"#swagger-ui",deepLinking:true,layout:"BaseLayout"})</script></body></html>'; });
   return router;
 }
 
@@ -103,7 +110,7 @@ function sendResult(req: Request, res: Response, result: unknown, format: Respon
   if (/application\/json/i.test(contentType)) format = 'json';
   else if (/application\/xml/i.test(contentType)) format = 'xml';
   else if (contentType && typeof result === 'string') { res.send(result); return; }
-  if (res.statusCode === 204) { res.end(); return; }
+  if (res.statusCode === 204) { res.type('text/html'); res.end(); return; }
   res.type(format === 'xml' ? 'application/xml' : format === 'json' ? 'application/json' : 'text/html');
   if (req.method === 'HEAD') { res.end(); return; }
   if (format === 'xml') res.send(xmlResponse(result));
@@ -154,8 +161,22 @@ class CompatibilityController {
       else if (resolvedPath === '/health' || resolvedPath === '/swagger/json-schema') format = 'json';
       // Yii parses bodyParams only when the action asks for them, after routing,
       // content negotiation and authentication. Keep raw bytes for payment signing.
+      let parsedJsonBody: unknown;
+      let hasParsedJsonBody = false;
       const context: Context = { req, res, query: req.query, params: resolved.params,
-        get body() { if ((req as CompatibilityRequest).bodyError) throw (req as CompatibilityRequest).bodyError; return req.body ?? {}; } };
+        get body() {
+          if ((req as CompatibilityRequest).bodyError) throw (req as CompatibilityRequest).bodyError;
+          if (resolvedPath === '/admin-api/devices/:id/configuration') {
+            if (req.is('application/json') && (req as CompatibilityRequest).rawBody?.length && (req.body === null || typeof req.body !== 'object' || Array.isArray(req.body))) throw new ApiError(422, '设备配置必须为 JSON 对象');
+            if (req.is('application/x-www-form-urlencoded') && Array.isArray(req.body)) return Object.assign({}, req.body);
+            return req.body ?? {};
+          }
+          if (req.is('application/json') && (req as CompatibilityRequest).rawBody?.length) {
+            if (!hasParsedJsonBody) { parsedJsonBody = parsePhpJson((req as CompatibilityRequest).rawBody!.toString('utf8')) ?? []; hasParsedJsonBody = true; }
+            return parsedJsonBody as Row;
+          }
+          return req.body ?? {};
+        } };
       if (options) res.status(405);
       const result = await resolved.route.handler(context);
       if (res.headersSent) return;
@@ -178,19 +199,19 @@ export async function createApplication(services = createServices()): Promise<IN
   const app = await NestFactory.create(ApplicationModule, { logger: process.env.NODE_ENV === 'test' ? false : ['error', 'warn', 'log'], bodyParser: false });
   const server = app.getHttpAdapter().getInstance() as express.Express;
   server.disable('x-powered-by');
-  server.set('query parser', (value: string) => parseQuery(value, { duplicates: 'last' }));
+  server.set('query parser', parsePhpParameters);
   server.use('/swagger-ui', express.static(dirname(require.resolve('swagger-ui-dist/swagger-ui-bundle.js'))));
   if (process.env.TRUST_PROXY) server.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : process.env.TRUST_PROXY);
   const verify = (req: Request, _res: Response, buffer: Buffer) => { (req as any).rawBody = buffer; };
   app.use(express.json({ limit: '2mb', verify, strict: false }));
-  app.use(express.urlencoded({ extended: true, limit: '2mb', verify }));
+  app.use(express.raw({ type: 'application/x-www-form-urlencoded', limit: '2mb', verify }));
   app.use((error: any, req: CompatibilityRequest, res: Response, next: express.NextFunction) => {
     if (error?.type === 'entity.parse.failed') { req.bodyError = new ApiError(400, 'Invalid JSON data in request body: Syntax error'); next(); }
     else if (error?.status === 413) { const result = errorPayload(new ApiError(413, 'Request entity too large.')); res.status(result.status).json(result.body); }
     else next(error);
   });
   app.use((req: Request, _res: Response, next: express.NextFunction) => {
-    if (req.is('application/x-www-form-urlencoded') && (req as CompatibilityRequest).rawBody) req.body = parseQuery((req as CompatibilityRequest).rawBody!.toString('utf8'), { duplicates: 'last' });
+    if (req.is('application/x-www-form-urlencoded') && (req as CompatibilityRequest).rawBody) req.body = parsePhpParameters((req as CompatibilityRequest).rawBody!.toString('utf8'));
     const form = req.method === 'POST' && req.is('application/x-www-form-urlencoded') ? req.body?._method : undefined;
     if (typeof form === 'string' && !['GET', 'HEAD', 'OPTIONS'].includes(form.toUpperCase())) req.method = form.toUpperCase();
     else if (req.get('X-Http-Method-Override')) req.method = req.get('X-Http-Method-Override')!.toUpperCase();

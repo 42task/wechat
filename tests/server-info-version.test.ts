@@ -21,7 +21,7 @@ class InfoMemoryDb {
 
   async insert(table: string, data: Row) {
     this.writes.push({ method: 'insert', table });
-    const row = { id: Math.max(0, ...this.tables[table].map(value => Number(value.id))) + 1, ...structuredClone(data) };
+    const row = { ...(['device','setup'].includes(table) ? { updated_at: '2000-01-01 00:00:00' } : {}), ...(table === 'device' ? { created_at: '2000-01-01 00:00:00' } : {}), id: Math.max(0, ...this.tables[table].map(value => Number(value.id))) + 1, ...structuredClone(data) };
     this.tables[table].push(row);
     return structuredClone(row);
   }
@@ -189,8 +189,11 @@ describe('internal getInfo device version contract', () => {
 
   it('keeps the model default version for a new UUID when no version was reported', async () => {
     const f = fixture();
+    const insert = vi.spyOn(f.db, 'insert');
     await getInfo(f.services, 'internal-new');
     expect(f.db.tables.device[0].version).toBe(1);
+    expect(insert).toHaveBeenCalledWith('device', { uuid: 'internal-new', version: 1 });
+    expect(insert.mock.calls.find(([table]) => table === 'setup')?.[1]).not.toHaveProperty('updated_at');
     expect(f.db.writes.filter(write => write.method !== 'insert')).toEqual([]);
   });
 });

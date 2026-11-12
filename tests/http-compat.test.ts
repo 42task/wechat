@@ -7,6 +7,7 @@ import { AuthService } from '../src/core/auth';
 import { ApiError, errorPayload } from '../src/core/errors';
 import { Integrations } from '../src/integrations/integrations';
 import type { Services } from '../src/core/contracts';
+import fixtures from './fixtures/wechat-platform-test-keys.json';
 
 describe('Yii HTTP boundary compatibility', () => {
   let app: INestApplication, request: ReturnType<typeof supertest>;
@@ -15,7 +16,7 @@ describe('Yii HTTP boundary compatibility', () => {
     vi.stubEnv('SWAGGER_USERNAME', 'test-docs');
     vi.stubEnv('SWAGGER_PASSWORD', 'test-password');
     const db = { query: vi.fn(async () => []), one: vi.fn(async () => null) };
-    const services = { db, redis: { ping: async () => 'PONG', find: async () => null, save: async () => undefined }, auth: new AuthService(db as any), catalog: {}, integrations: new Integrations() } as unknown as Services;
+    const services = { db, redis: { ping: async () => 'PONG', find: async () => null, save: async () => undefined }, auth: new AuthService(db as any), catalog: {}, integrations: new Integrations({ platformKeys: { fixture: fixtures.platforms[0].certificate } }) } as unknown as Services;
     app = await createApplication(services);
     request = supertest(app.getHttpServer());
   });

@@ -32,6 +32,7 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
   const files = new MiniProgramFileService(db);
   router.add('POST', '/v2/site/login', async ctx => {
     const identity = await api.codeSession(ctx.body.code);
+    if (!nonempty(identity.openid)) return bad('微信登录失败，请重新登录', 401, 'UnauthorizedHttpException');
     const unionid = nonempty(identity.unionid) ? identity.unionid : null;
     let user: Row | null;
     if (unionid) {
@@ -69,20 +70,21 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       return bad(`bind phone failed: ${error instanceof HttpException ? error.message : 'getuserphonenumber failed'}`, 400, 'BadRequestHttpException');
     }
     try {
-      if (user.tel !== phone.phoneNumber) user = await db.update('user', user.id, { tel: phone.phoneNumber });
+      const number = phone.phoneNumber ?? null;
+      if (user.tel !== number && !(user.tel == null && number === '')) user = await db.update('user', user.id, { tel: number });
       user = await auth.role(user);
     } catch {
       return bad('bind phone failed: Failed to save phone number', 400, 'BadRequestHttpException');
     }
-    return success({ user: userFields(user), phone: phone.phoneNumber, purePhone: phone.purePhoneNumber ?? null, countryCode: phone.countryCode ?? null });
+    return success({ user: userFields(user), phone: phone.phoneNumber ?? null, purePhone: phone.purePhoneNumber ?? null, countryCode: phone.countryCode ?? null });
   });
   router.add('POST', '/v1/we-chat/openid', async ctx => {
     const identity = await api.codeSession(ctx.body.code);
     return { openid: identity.openid, unionid: identity.unionid || null, success: true, message: identity.unionid ? 'success' : 'unionid not available (check if user has authorized or follows related official account)' };
   });
   // Yii serializes the SDK application instance with no public fields.
-  router.add('GET', '/v1/we-chat/info', () => yiiObject('Application', {}));
-  router.add('GET', '/v1/wechat-pay/info', () => api.config.appId ?? false);
+  router.add('GET', '/v1/we-chat/info', () => { api.assertPaymentApplication(); return yiiObject('Application', {}); });
+  router.add('GET', '/v1/wechat-pay/info', () => { api.assertPaymentApplication(); return api.config.appId ?? false; });
 
   for (const version of ['v1', 'v2']) {
     const prefix = `/${version}/wechat-pay`;
@@ -118,7 +120,7 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       let result: Row;
       try {
         result = await api.payment('GET', `/v3/pay/transactions/out-trade-no/${encodeURIComponent(ctx.query.out_trade_no)}?mchid=${encodeURIComponent(api.config.mchId || '')}`);
-      } catch { return { code: 500, message: '查询订单失败' }; }
+      } catch (error) { return { code: 500, message: `查询订单失败: ${error instanceof Error ? error.message : ''}` }; }
       const data: Row = { order_info: result, trade_state: result.trade_state ?? '', trade_state_desc: result.trade_state_desc ?? '' };
       if (version === 'v2') {
         if (result.out_trade_no !== ctx.query.out_trade_no) return bad('查询订单编号不一致', 403);
@@ -164,10 +166,21 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
     });
     const notify = (refund: boolean) => async (ctx: Context) => {
       // WeChat cannot supply a user Bearer. Platform RSA signature authenticates this route.
+      api.assertPaymentApplication();
       const raw = (ctx.req as typeof ctx.req & { rawBody?: Buffer }).rawBody;
-      const notice = await api.notification(raw ?? '', ctx.req.headers);
-      if (typeof notice.id !== 'string' || !notice.id || typeof notice.event_type !== 'string'
-        || (refund ? !notice.event_type.startsWith('REFUND.') : notice.event_type !== 'TRANSACTION.SUCCESS')) return bad('微信支付通知类型不匹配');
+      let notice: Row;
+      try { notice = await api.notification(raw ?? '', ctx.req.headers); }
+      catch (error) {
+        if (error instanceof HttpException && (error as HttpException & { legacyCallbackResponse?: boolean }).legacyCallbackResponse) {
+          ctx.res.status(500); ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8'); return error.getResponse();
+        }
+        return bad(`${refund ? '退款通知处理异常' : '支付通知处理异常'}: ${error instanceof Error ? error.message : ''}`, 500);
+      }
+      const handled = refund ? ['REFUND.SUCCESS', 'REFUND.ABNORMAL', 'REFUND.CLOSED'].includes(notice.event_type) : notice.event_type === 'TRANSACTION.SUCCESS' && notice.resource?.trade_state === 'SUCCESS';
+      if (!handled) {
+        ctx.res.setHeader('Content-Type', 'application/json; charset=UTF-8');
+        return { code: 'SUCCESS', message: '成功' };
+      }
       if (version === 'v2' && !refund && notice.resource?.trade_state === 'SUCCESS') {
         try {
           const orderNo = notice.resource.out_trade_no;
@@ -204,10 +217,20 @@ export function registerIntegrations(router: ApiRouter, services: Services): voi
       return api.federationToken(ctx.query.bucket, region);
     });
   }
-  // Source QCloud action called an undefined File::Create. This repairs that broken
-  // action with its documented signing operation; it does not manufacture file rows.
+  // This legacy action fails before any storage or database operation in Yii.
+  // Preserve that public failure until a separate feature change is authorized.
   router.add('GET', '/v1/q-cloud/object-url', async ctx => {
+    for (const name of ['key', 'expires', 'method']) {
+      const value = ctx.query[name];
+      if (value === undefined) continue;
+      if (Array.isArray(value) || value !== null && typeof value === 'object') return bad(`Invalid data received for parameter "${name}".`, 400, 'BadRequestHttpException');
+      if (name === 'expires') {
+        const text = String(value ?? '').trim();
+        if (!/^[+-]?(?:0|[1-9]\d*)$/.test(text) || BigInt(text) < -9223372036854775808n || BigInt(text) > 9223372036854775807n) return bad('Invalid data received for parameter "expires".', 400, 'BadRequestHttpException');
+      }
+    }
     if (ctx.query.key === undefined) return bad('Missing required parameters: key', 400, 'BadRequestHttpException');
-    return { url: await api.objectUrl(ctx.query.key, ctx.query), method: String(ctx.query.method || 'GET').toUpperCase(), expires: Number(ctx.query.expires ?? 900) };
+    const message = 'Call to undefined method app\\modules\\v1\\models\\File::Create()';
+    throw Object.assign(new HttpException(message, 500), { responseBody: { name: 'Exception', message, code: 0, type: 'Error' } });
   });
 }

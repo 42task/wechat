@@ -31,8 +31,8 @@ describe('provider integrations', () => {
     expect((await api.codeSession('fresh-code')).openid).toBe('verified');
     expect(new URL(requested).searchParams.get('js_code')).toBe('fresh-code');
     expect(new URL(requested).hostname).toBe('api.weixin.qq.com');
-    await expect(service(async () => Response.json({ errcode: 40029, errmsg: 'invalid code' })).codeSession('bad')).rejects.toThrow('微信');
-    await expect(service(async () => Response.json({})).codeSession('bad')).rejects.toThrow('微信');
+    await expect(service(async () => Response.json({ errcode: 40029, errmsg: 'invalid code' })).codeSession('bad')).rejects.toMatchObject({ status: 500, message: 'code2Session error: {"errcode":40029,"errmsg":"invalid code"}', responseBody: { type: 'EasyWeChat\\Kernel\\Exceptions\\HttpException' } });
+    await expect(service(async () => Response.json({})).codeSession('bad')).rejects.toMatchObject({ status: 500, message: 'code2Session error: []' });
   });
 
   it('signs the exact APIv3 request body and verifies the returned signature', async () => {
@@ -46,7 +46,7 @@ describe('provider integrations', () => {
     });
     const result = await api.payment('POST', '/v3/pay/transactions/jsapi', { amount: { total: 100 } });
     expect(result.prepay_id).toBe('prepay');
-    await expect(service(async () => Response.json({ prepay_id: 'forged' })).payment('POST', '/v3/pay/transactions/jsapi', {})).rejects.toThrow('签名');
+    await expect(service(async () => Response.json({ prepay_id: 'forged' })).payment('POST', '/v3/pay/transactions/jsapi', {})).rejects.toThrow('Missing Header: Wechatpay-Signature');
   });
 
   it('decrypts a signed notification and rejects tampering, unknown serial and stale replay', async () => {
@@ -58,18 +58,21 @@ describe('provider integrations', () => {
     const headers = { 'wechatpay-timestamp': String(now), 'wechatpay-nonce': 'notice-nonce', 'wechatpay-serial': 'platform-serial', 'wechatpay-signature': signature };
     const api = service(async () => { throw Error('unexpected network'); });
     expect((await api.notification(raw, headers)).resource.out_trade_no).toBe('order1');
-    await expect(api.notification(raw + ' ', headers)).rejects.toThrow('签名');
-    await expect(api.notification(raw, { ...headers, 'wechatpay-serial': 'unknown' })).rejects.toThrow('签名');
-    await expect(api.notification(raw, { ...headers, 'wechatpay-timestamp': String(now - 600) })).rejects.toThrow('签名');
+    const futureTimestamp = now + 600;
+    const futureHeaders = { ...headers, 'wechatpay-timestamp': String(futureTimestamp), 'wechatpay-signature': sign('RSA-SHA256', Buffer.from(`${futureTimestamp}\nnotice-nonce\n${raw}\n`), platform.privateKey).toString('base64') };
+    expect((await api.notification(raw, futureHeaders)).resource.out_trade_no).toBe('order1');
+    await expect(api.notification(raw + ' ', headers)).rejects.toThrow('Invalid Signature');
+    await expect(api.notification(raw, { ...headers, 'wechatpay-serial': 'unknown' })).rejects.toThrow('No platform certs found for serial: unknown');
+    await expect(api.notification(raw, { ...headers, 'wechatpay-timestamp': String(now - 600) })).rejects.toThrow('Clock Offset Exceeded');
     const forged = JSON.stringify({ resource: { algorithm: 'AEAD_AES_256_GCM', nonce: 'nonce-123456', ciphertext } });
     const forgedHeaders = { ...headers, 'wechatpay-signature': sign('RSA-SHA256', Buffer.from(`${now}\nnotice-nonce\n${forged}\n`), platform.privateKey).toString('base64') };
     await expect(api.notification(forged, forgedHeaders)).rejects.toThrow('解密');
     const invalidBody = 'null';
     const invalidHeaders = { ...headers, 'wechatpay-signature': sign('RSA-SHA256', Buffer.from(`${now}\nnotice-nonce\n${invalidBody}\n`), platform.privateKey).toString('base64') };
-    await expect(api.notification(invalidBody, invalidHeaders)).rejects.toThrow('格式无效');
+    await expect(api.notification(invalidBody, invalidHeaders)).rejects.toThrow('Invalid request body.');
   });
 
-  it('signs STS requests and scopes the encoded policy to the configured COS bucket', async () => {
+  it('signs the source STS request with caller storage, legacy policy fields and provider-default duration', async () => {
     const api = service(async (input, init) => {
       expect(String(input)).toBe('https://sts.tencentcloudapi.com/');
       const headers = new Headers(init?.headers);
@@ -77,13 +80,16 @@ describe('provider integrations', () => {
       expect(headers.get('X-TC-Action')).toBe('GetFederationToken');
       const data = JSON.parse(String(init?.body));
       const policy = JSON.parse(decodeURIComponent(data.Policy));
-      expect(policy.statement[0].principal).toBeUndefined();
-      expect(policy.statement[0].resource[0]).toBe('qcs::cos:ap-nanjing:uid/1250000000:prefix//1250000000/test/*');
+      expect(policy.statement[0].principal).toEqual({ qcs: ['*'] });
+      expect(policy.statement[0].action).toContain('name/cos:GenerateSignURL');
+      expect(policy.statement[0].action).toContain('name/cos:GetObjectUrl');
+      expect(data).not.toHaveProperty('DurationSeconds');
+      expect(policy.statement[0].resource[0]).toMatch(/^qcs::cos:ap-nanjing:uid\/1250000000:prefix\/\/1250000000\/(test|other)\/\*$/);
       return Response.json({ Response: { Credentials: { Token: 'temporary', TmpSecretId: 'tmp-id', TmpSecretKey: 'tmp-key' }, ExpiredTime: now + 1800, RequestId: 'req' } });
     });
     expect((await api.store()).data.tmpSecretId).toBe('tmp-id');
-    await expect(api.federationToken('other-1250000000', 'ap-nanjing')).rejects.toThrow('存储桶');
-    await expect(service(async () => Response.json({ Response: { Error: { Code: 'Denied', Message: 'denied' } } })).store()).rejects.toThrow('腾讯云');
+    await expect(api.federationToken('other-1250000000', 'ap-nanjing')).resolves.toMatchObject({ Credentials: { TmpSecretId: 'tmp-id' } });
+    await expect(service(async () => Response.json({ Response: { Error: { Code: 'Denied', Message: 'denied' } } })).store()).rejects.toMatchObject({ status: 500, message: 'denied', responseBody: { type: 'TencentCloud\\Common\\Exception\\TencentCloudSDKException' } });
   });
 
   it('generates bounded signed COS URLs and reads real HEAD metadata', async () => {
@@ -102,7 +108,7 @@ describe('provider integrations', () => {
     await expect(api.objectUrl('a', { expires: 86401 })).rejects.toThrow('expires');
   });
 
-  it('caches only valid phone access tokens and rejects mismatched app identity', async () => {
+  it('caches phone access tokens and retains the source controller treatment of provider watermark metadata', async () => {
     let tokenRequests = 0;
     let phoneRequests = 0;
     const api = service(async (input, init) => {
@@ -119,7 +125,7 @@ describe('provider integrations', () => {
     expect((await api.phone('code1')).countryCode).toBe('86');
     expect((await api.phone('code2')).phoneNumber).toBe('8613800000000');
     expect(tokenRequests).toBe(1);
-    await expect(api.phone('code3')).rejects.toThrow('身份不匹配');
+    await expect(api.phone('code3')).resolves.toMatchObject({ phoneNumber: '8613800000000', watermark: { appid: 'wrong-app' } });
     await expect(service(async () => Response.json({ errcode: 40013 })).phone('invalid')).rejects.toThrow('微信');
   });
 

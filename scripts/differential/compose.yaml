@@ -1,0 +1,17 @@
+services:
+  database:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: wechat-local-test
+      MYSQL_DATABASE: wechat_test
+    ports:
+      - '127.0.0.1:33368:3306'
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-pwechat-local-test', '--silent']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - '127.0.0.1:36380:6379'

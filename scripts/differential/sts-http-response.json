@@ -1,0 +1,9 @@
+{
+  "Response": {
+    "Error": {
+      "Code": "AuthFailure.InvalidSecretId",
+      "Message": "Synthetic provider denied fixture credentials."
+    },
+    "RequestId": "synthetic-request"
+  }
+}

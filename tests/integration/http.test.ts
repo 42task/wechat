@@ -85,7 +85,9 @@ describe.skipIf(process.env.RUN_INTEGRATION !== '1')('real HTTP + MySQL-compatib
     expect(health.body).toMatchObject({ status: 'healthy', checks: { database: { status: 'up' }, redis: { status: 'up' } } });
     expect((await request.head('/health').expect(200)).text).toBeUndefined();
     await request.get('/swagger/json-schema').expect(401);
-    expect((await request.get('/swagger/json-schema').auth('docs-test', 'docs-password').expect(200)).body.openapi).toBe('3.0.3');
+    const schema = (await request.get('/swagger/json-schema').auth('docs-test', 'docs-password').expect(200)).body;
+    expect(schema).toMatchObject({ openapi: '3.0.0', info: { title: '微信小程序后端 API (v2)', version: '2.0.0' } });
+    expect(schema.paths['/v2/applet/refresh'].post).toBeDefined();
     const options = await request.options('/v2/devices').expect(200);
     expect(options.headers.allow).toBe('GET, POST, HEAD, OPTIONS');
     expect((await request.put('/v2/devices').expect(405)).body).toBeNull();

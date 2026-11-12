@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { ApiError } from './errors';
 import type { Row } from './contracts';
 import { isJsonColumn, markJsonDecoded } from './json';
+import { parsePhpJson, setPhpNumberType } from './php';
 
 export interface Column { name: string; type: string; nullable: boolean; default?: unknown; key?: string; }
 const transactions = new AsyncLocalStorage<{ pool: Pool; connection: PoolConnection }>();
@@ -28,8 +29,9 @@ export class Database {
     const [result, fields] = await (this.active() ?? this.pool).query({ sql, typeCast: (field, next) => field.extendedFormat === 'json' || isJsonColumn(field.table, field.name, field.type) ? field.string('utf8') : next() }, params);
     if (Array.isArray(result) && Array.isArray(fields)) for (const row of result as Row[]) {
       for (const field of fields) if ((field.extendedFormat === 'json' || isJsonColumn(field.orgTable || field.table, field.orgName || field.name, field.columnType)) && typeof row[field.name] === 'string') {
-        try { row[field.name] = JSON.parse(row[field.name]); } catch { /* Legacy non-JSON text remains unchanged. */ }
+        try { row[field.name] = parsePhpJson(row[field.name], type => { if (type) setPhpNumberType(row, field.name, type); }); } catch { /* Legacy non-JSON text remains unchanged. */ }
       }
+      for (const field of fields) if (typeof row[field.name] === 'number' && ([4, 5].includes(Number(field.columnType ?? field.type)) || /^(?:FLOAT|DOUBLE)$/i.test(String(field.typeName)))) setPhpNumberType(row, field.name, 'double');
       markJsonDecoded(row);
     }
     return result as T[];

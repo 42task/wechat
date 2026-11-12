@@ -1,4 +1,54 @@
-# 验证记录（2026-10-23 当前契约对齐）
+# 验证记录（2026-11-12）
+
+本轮以未修改的 `game@74cae4cdb0a5807dd32b97dd90d56ceff3f5c52b` 为合同，在 `codex/yii-node-parity-20261112` 分支修复 Node。仅使用 **MySQL 8.4.9 + Redis 7.4**；本地测试 Compose 与 CI 已改为 MySQL。没有新增业务功能，没有推送、发布镜像或更新线上 Stack。
+
+| 检查 | 本轮结果 |
+| --- | --- |
+| Node 全部测试，真实隔离 MySQL/Redis | **1,024 / 1,024**，0 失败、0 跳过 |
+| 实际 Yii / 编译版 Node HTTP 与业务差分 | **834 / 835**，0 工具错误；唯一差异是既有诊断凭据脱敏 |
+| 匿名路由与前置响应 | 495 / 495 |
+| 携带身份路由与前置响应 | 183 / 184，保留 `GET /v1/local/test` 的 Bearer 脱敏差异 |
+| 管理端有效流程和边界 | 35 / 35 |
+| v1 游戏、积分与账务副作用 | 65 / 65 |
+| v2 设备、配置、文件、状态副作用 | 51 / 51 |
+| 本地 HTTPS Y1 替身 | 5 / 5 |
+| 业务 JWT 真实双向签发并立即接受 | Yii → Node 5 / 5；Node → Yii 5 / 5；另有未来/过期负例 |
+| 支付损坏配置不阻断非支付应用 | 4 / 4 |
+| 原 PHP 微信/支付 SDK 与 Node 供应商合同 | 42 / 42，使用合成密码材料与替身传输 |
+| 原 Tencent SDK 与 Node STS 请求、策略及响应 | 9 / 9，无真实凭据或外网授权请求 |
+| PHP 浮点格式、整数校验与 SQL typecast | 172 / 172，原 PHP/Yii 函数 oracle |
+| 当前源路由与新鲜度 | 250 / 250 可解析项、239 条源 404 保留，212 个 PHP 文件核对通过 |
+| TypeScript / 本地生产 Docker 镜像 | 通过；uid=1000，包含编译迁移与源 OpenAPI，无开发依赖/私钥目录 |
+| 镜像内空库迁移、重复迁移、实际启动 | 均通过；健康接口 200，MySQL/Redis up；坏支付私钥不阻断健康检查 |
+
+修复涵盖 JWT 小数时间、支付配置懒加载、PHP 请求/JSON 类型、fields/分页、缓存头、SQL 时钟和 clean-update 行为。账务特别保留 Yii 的运算顺序、模型整数校验、SQL 截断、失败前副作用及保存后内存响应，不新增 422 规则来替代旧行为。微信/支付/STS 的事件门控和公开错误也按当前源实现对照。
+
+严格差分命令因诊断脱敏这一项保留差异而返回 **exit 1**，结果没有被改成零差异。源会回显 Bearer，Node 保留 `[redacted]`；该差异与所有原始对照均在报告中可查。PHP 私有文件路径/堆栈、生成时钟、随机凭据和等义 Link 引号按脚本的显式规则处理，公开状态/消息/类型、字段缺失与 SQL/Redis 余额仍参与比较。
+
+**当前结论：本地候选修复已验证，尚不建议线上替换。** 用户浏览器中的 Portainer 是实际运行环境；Yii 与原版本 Node 共用 MySQL 和 Redis，Node 仍为 `959a1f91fffd3a49e5458ce5dc90c44bc3b15b3d`。本轮仅只读确认远端，没有迁移、改配置、切流或写入测试数据。真实微信登录、支付/退款通知、COS 上传权限、Y1 与设备验收须在隔离环境完成。
+
+主报告为 `runtime/parity-validation/report.html`，原始结果和 JSON 汇总保存在同目录；原始修复前结果在 `baseline-20261112`。目录被 Git 忽略，包含的本地配置/密钥不能提交。报告生成器仅嵌入白名单脱敏证据，不读取本地密钥或 context。初始 797 组中 121 组不同；本轮新增了边界用例，两轮分母不同。
+
+本地环境已经准备好时：
+
+```sh
+npm run build
+# 独立终端保持服务运行；只绑定 loopback
+node --import tsx scripts/differential/serve.ts
+# 另一终端顺序执行
+node --import tsx scripts/differential/run-integration.ts
+node --import tsx scripts/differential/run.ts
+node --import tsx scripts/differential/report.ts
+npm run parity -- --source-root ../game
+```
+
+重建空本地测试环境时先用 `scripts/differential/compose.yaml` 启动 MySQL/Redis，再运行 `prepare.ts --fresh`。该参数遇到已存在的 parity 库会拒绝，不会 DROP；已有库直接复用 context。所有写入测试均有 loopback、专用端口、parity 库名与 Redis DB 保护。
+
+生产依赖审计另记录同一 multer 2.4.0 公告及其 Nest 依赖链的两条 high；当前源码未注册 multer/multipart 上传中间件，本轮未升级依赖。详情保留在 `runtime/parity-validation/dependency-audit.json`。
+
+## 历史归档：2026-10-23 契约对齐
+
+以下是原仓库历史记录，数据库矩阵、发布与清理状态均指当时，不代表本轮执行。
 
 验证对象为 `source-manifest.json` 的 202 个源文件哈希，包含当前 game 管理 JWT、设备删除/历史保留、设备 version 上报及文件下载/支付流程；其中包含源工作区并发产生的改动。验收锁定在 2026-10-22 17:52:58 UTC 的冻结快照；不将其他会话之后的修改混入本次验证。
 

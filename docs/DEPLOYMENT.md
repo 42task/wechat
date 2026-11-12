@@ -4,15 +4,18 @@ Node 后端使用独立镜像 `hkccr.ccs.tencentyun.com/gdgeek/wechat2`，Portai
 
 ## CI 镜像
 
-`.github/workflows/ci.yml` 在三个数据库版本的验证全部成功后，使用仓库现有的 `TCR_USERNAME` / `TCR_PASSWORD` Secrets 发布镜像。PR 和其他分支只运行验证。
+`.github/workflows/ci.yml` 在 MySQL 8.4、Redis 7.4 的测试及生产镜像迁移验证成功后，使用仓库现有的 `TCR_USERNAME` / `TCR_PASSWORD` Secrets 发布镜像。PR 和下表之外的分支只运行验证。
 
 | 推送分支 | 发布标签 |
 | --- | --- |
 | `main` | `main`、`latest`、`sha-<完整提交 SHA>` |
 | `develop` | `develop`、`sha-<完整提交 SHA>` |
 | `publish` | `publish`、`sha-<完整提交 SHA>` |
+| `codex/yii-node-parity-20261112` | 仅 `sha-<完整提交 SHA>`，不生成分支浮动标签 |
 
 `publish` 不更新 `main`、`latest` 或其他分支标签；发布过程不修改旧的 `gdgeek/wechat` 镜像。部署可固定完整 SHA 标签，以便核对构建及回滚。镜像内的 `GIT_COMMIT` / `BUILD_TIME` 和 OCI revision/created labels 记录构建来源。
+
+本轮候选分支只发布完整 SHA 标签，不更新 `main`、`develop`、`publish`、`latest`，也不触发跟随这些标签的 Watchtower。CI 发布镜像不会修改 Portainer Stack。上线联调应先记录当前 Node 的完整镜像标签及 digest，然后只更新 Node 业务容器，保留旧镜像用于回滚；现有 Stack 若含密钥准备、备份或迁移服务，整栈重新部署可能重跑这些任务，须先核对其配置。不要把 Yii 的入口域名或镜像改为候选版本。
 
 ## b0 / b1 单 Stack
 

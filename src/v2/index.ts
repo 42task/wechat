@@ -2,6 +2,7 @@ import type { Context, Row, Services } from '../core/contracts';
 import type { ApiRouter } from '../core/router';
 import { ApiError } from '../core/errors';
 import { absoluteLocation, bodyDeviceId, controlledDevice, controlledSetup, denyAdministration, paginate, saveResource, serialize, validate } from './resources';
+import { phpNumberType } from '../core/php';
 import { getInfo, log, refresh, reportedVersion } from './server';
 import { MiniProgramFileService } from './file-service';
 
@@ -27,7 +28,7 @@ export function registerV2(router: ApiRouter, s: Services): void {
   router.add('GET', '/v2/setups', async ctx => paginate(s, ctx, 'setup', await bearer(ctx)));
   router.add('POST', '/v2/setups', async ctx => {
     const user = await bearer(ctx);
-    const deviceId = bodyDeviceId(ctx.body.device_id);
+    const deviceId = bodyDeviceId(ctx.body.device_id, phpNumberType(ctx.body, 'device_id'));
     await controlledDevice(s, user, deviceId);
     const data = await validate(s, 'setup', ctx.body);
     const saved = await saveResource(s, 'setup', data);
@@ -37,7 +38,7 @@ export function registerV2(router: ApiRouter, s: Services): void {
   router.add('GET', '/v2/setups/:id', async ctx => serialize(s, 'setup', await controlledSetup(s, await bearer(ctx), ctx.params.id), ctx.query));
   router.add(['PUT', 'PATCH'], '/v2/setups/:id', async ctx => {
     const row = await controlledSetup(s, await bearer(ctx), ctx.params.id);
-    if (Object.hasOwn(ctx.body, 'device_id') && bodyDeviceId(ctx.body.device_id) !== Number(row.device_id)) throw new ApiError(403, '不可将设备配置重新关联到其他设备');
+    if (Object.hasOwn(ctx.body, 'device_id') && bodyDeviceId(ctx.body.device_id, phpNumberType(ctx.body, 'device_id')) !== Number(row.device_id)) throw new ApiError(403, '不可将设备配置重新关联到其他设备');
     const data = await validate(s, 'setup', ctx.body, row);
     return serialize(s, 'setup', await saveResource(s, 'setup', data, row), ctx.query);
   });

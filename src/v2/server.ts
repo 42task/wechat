@@ -26,8 +26,9 @@ export async function getInfo(s: Services, uuid: unknown, version: number | null
         device = await s.db.transaction(async db => {
           const existing = await db.one('SELECT * FROM device WHERE uuid = ?', [uuid]);
           if (existing) return existing;
-          const created = await db.insert('device', { uuid, version: 1, created_at: sqlNow(), updated_at: sqlNow() });
-          await db.insert('setup', { device_id: created.id, ...defaultData(), ...info });
+          const created = await db.insert('device', { uuid, version: 1 });
+          const { updated_at: _generatedInPhpTimezone, ...configuration } = info;
+          await db.insert('setup', { device_id: created.id, ...defaultData(), ...configuration });
           return created;
         });
       } catch (error: any) {
@@ -51,7 +52,9 @@ const attributes: Record<string, string[]> = {
 };
 function redisRow(model: string, row: Row | null): Row | null {
   if (!row) return null;
-  return Object.fromEntries(attributes[model].map(key => [key, row[key] ?? null]));
+  // Redis ActiveRecord serializes only attributes actually loaded or assigned;
+  // an unset field is absent, while an explicitly assigned null remains null.
+  return Object.fromEntries(attributes[model].filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]]));
 }
 function truthy(value: any): boolean { return value !== null && value !== undefined && value !== false && value !== 0 && value !== '' && value !== '0' && !(typeof value === 'object' && Object.keys(value).length === 0); }
 function requiredScalar(value: any, name: string): string {
@@ -72,7 +75,7 @@ async function getReport(s: Services, ctx: Context, token: string, uuid?: string
   row ||= { token, uuid, created_at: String(Math.floor(Date.now() / 1000)) };
   if (!row.device_id) {
     let device = await s.db.one('SELECT * FROM device WHERE uuid = ?', [row.uuid]);
-    if (!device) device = await s.db.insert('device', { uuid, version: 1, ip: ctx.req.ip, created_at: sqlNow(), updated_at: sqlNow() });
+    if (!device) device = await s.db.insert('device', { uuid, version: 1, ip: ctx.req.ip });
     row.device_id = device.id;
   }
   // Yii updateAll() synchronizes every UUID login without firing timestamp behavior.
@@ -113,10 +116,10 @@ async function getFile(s: Services, token: string, key: string | undefined, appl
 }
 export async function refresh(s: Services, ctx: Context, authenticatedUser?: Row): Promise<Row> {
   const token = requiredScalar(ctx.body.token, 'token');
+  await s.auth.requireDevice(ctx);
   const values = ['uuid', 'id', 'key'].filter(key => truthy(ctx.body[key]));
   if (values.length !== 1) throw new ApiError(400, 'Exactly one of uuid, id, or key must be provided', undefined, 'HttpException');
   const kind = values[0], value = requiredScalar(ctx.body[kind], kind);
-  await s.auth.requireDevice(ctx);
   const version = kind === 'uuid' ? reportedVersion(ctx.body) : 0;
   await recordRequest(s, ctx, ctx.req.path?.split('/').pop() || 'refresh');
   const expands = new Set(csv(ctx.query.expand));

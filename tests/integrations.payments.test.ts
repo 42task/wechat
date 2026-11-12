@@ -62,8 +62,8 @@ function setup(overrides: Partial<IntegrationOptions> = {}, reserved = true) {
   return { requests, call, provider, db, file, responseStatuses, reservationsAtProvider, services };
 }
 
-function notice(refund = false, merchant = 'merchant') {
-  const resource = refund ? { mchid: merchant, out_refund_no: 'refund1', refund_status: 'SUCCESS' } : { mchid: merchant, appid: appId, out_trade_no: 'order01', trade_state: 'SUCCESS' };
+function notice(refund = false, merchant = 'merchant', metadata: Row = {}) {
+  const resource = { ...(refund ? { mchid: merchant, out_refund_no: 'refund1', refund_status: 'SUCCESS' } : { mchid: merchant, appid: appId, out_trade_no: 'order01', trade_state: 'SUCCESS' }), ...metadata };
   const cipher = createCipheriv('aes-256-gcm', config.apiV3Key, Buffer.from('nonce-123456'));
   cipher.setAAD(Buffer.from('test'));
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(resource)), cipher.final(), cipher.getAuthTag()]).toString('base64');
@@ -169,7 +169,7 @@ describe('payment endpoints with cryptographic provider transport', () => {
       expect(await call('GET', `/${version}/wechat-pay/wxpay-query-refund`, {}, { out_refund_no: 'refund1' })).toMatchObject({ code: 0, data: { refund_status: 'SUCCESS', refund_amount: 50, refund_info: { refund_id: 'refund-id' } } });
     }
   });
-  it('authenticates raw payment and refund notifications, rejects cross-endpoint events and merchant mismatch', async () => {
+  it('authenticates notifications and acknowledges the source paid, refund and ignored events', async () => {
     const { call } = setup();
     for (const version of ['v1', 'v2']) {
       const paid = notice(false), refund = notice(true);
@@ -177,10 +177,57 @@ describe('payment endpoints with cryptographic provider transport', () => {
       expect(paidResponse).toEqual({ code: 'SUCCESS', message: '成功' });
       const refundedResponse = await call('POST', `/${version}/wechat-pay/refund-notify`, {}, {}, refund.raw, refund.headers);
       expect(refundedResponse).toEqual({ code: 'SUCCESS', message: '成功' });
-      await expect(call('POST', `/${version}/wechat-pay/refund-notify`, {}, {}, paid.raw, paid.headers)).rejects.toThrow('类型不匹配');
-      const wrongMerchant = notice(false, 'attacker');
-      await expect(call('POST', `/${version}/wechat-pay/notify`, {}, {}, wrongMerchant.raw, wrongMerchant.headers)).rejects.toThrow('商户身份不匹配');
+      await expect(call('POST', `/${version}/wechat-pay/refund-notify`, {}, {}, paid.raw, paid.headers)).resolves.toEqual({ code: 'SUCCESS', message: '成功' });
     }
+  });
+  it('retains source v1 acknowledgements for authenticated resource metadata without order processing', async () => {
+    const f = setup();
+    const read = vi.spyOn(f.db, 'one');
+    const write = vi.spyOn(f.db, 'execute');
+    for (const refund of [false, true]) {
+      const signed = notice(refund, 'other-merchant', { appid: 'other-app' });
+      expect(await f.call('POST', `/v1/wechat-pay/${refund ? 'refund-notify' : 'notify'}`, {}, {}, signed.raw, signed.headers)).toEqual({ code: 'SUCCESS', message: '成功' });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(f.requests).toHaveLength(0);
+    expect((await f.file())!.unlocked).toBe(0);
+  });
+  it('acknowledges authenticated unknown and cross-endpoint events without queries, writes or hooks', async () => {
+    const hook = vi.fn(async () => {});
+    const f = setup({ onPaymentNotification: hook });
+    const paid = notice(false, 'other-merchant', { appid: 'other-app' }), refund = notice(true, 'other-merchant', { appid: 'other-app' });
+    const unknown = JSON.stringify({ ...JSON.parse(paid.raw), event_type: 'MIGRATION.TEST' });
+    const unknownHeaders = { ...paid.headers, 'wechatpay-signature': sign('RSA-SHA256', Buffer.from(`${now}\nnonce\n${unknown}\n`), keys.privateKey).toString('base64') };
+    const read = vi.spyOn(f.db, 'one');
+    const write = vi.spyOn(f.db, 'execute');
+    for (const version of ['v1', 'v2']) {
+      for (const [action, raw, headers] of [
+        ['notify', unknown, unknownHeaders], ['notify', refund.raw, refund.headers], ['refund-notify', paid.raw, paid.headers],
+      ] as const) expect(await f.call('POST', `/${version}/wechat-pay/${action}`, {}, {}, raw, headers)).toEqual({ code: 'SUCCESS', message: '成功' });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(f.requests).toHaveLength(0);
+    expect(hook).not.toHaveBeenCalled();
+    expect((await f.file())!.unlocked).toBe(0);
+  });
+  it('preserves the source signed XML callback failure without processing a payment', async () => {
+    const hook = vi.fn(async () => {});
+    const f = setup({ onPaymentNotification: hook });
+    const raw = '<xml><event_type>TRANSACTION.SUCCESS</event_type><trade_state>SUCCESS</trade_state></xml>';
+    const headers = { ...notice().headers, 'content-type': 'application/xml', 'wechatpay-signature': sign('RSA-SHA256', Buffer.from(`${now}\nnonce\n${raw}\n`), keys.privateKey).toString('base64') };
+    const read = vi.spyOn(f.db, 'one');
+    const write = vi.spyOn(f.db, 'execute');
+    for (const version of ['v1', 'v2']) {
+      expect(await f.call('POST', `/${version}/wechat-pay/notify`, {}, {}, raw, headers)).toEqual({ code: 'ERROR', message: 'Undefined array key "event_type"' });
+      expect(f.responseStatuses.at(-1)).toBe(500);
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(f.requests).toHaveLength(0);
+    expect(hook).not.toHaveBeenCalled();
+    await expect(f.call('POST', '/v2/wechat-pay/notify', {}, {}, raw + ' ', headers)).rejects.toThrow('Invalid Signature');
   });
   it('rejects boolean amounts before contacting the payment provider', async () => {
     const { requests, call } = setup();
@@ -279,9 +326,38 @@ describe('payment endpoints with cryptographic provider transport', () => {
     expect((await f.file())!.unlocked).toBe(0);
   });
 
+  it('uses the trusted v2 requery rather than callback metadata to decide file access', async () => {
+    const callback = notice(false, 'other-callback-merchant', { appid: 'other-callback-app', amount: { total: 1 }, payer: { openid: 'other-callback-payer' }, attach: '{"file_id":2,"user_id":8}' });
+    const accepted = setup();
+    expect(await accepted.call('POST', '/v2/wechat-pay/notify', {}, {}, callback.raw, callback.headers)).toEqual({ code: 'SUCCESS', message: '成功' });
+    expect(accepted.requests).toHaveLength(1);
+    expect(accepted.requests[0].url.searchParams.get('mchid')).toBe('merchant');
+    expect((await accepted.file())!.unlocked).toBe(1);
+
+    for (const patch of [
+      { mchid: 'other-merchant' }, { appid: 'other-app' }, { payer: { openid: 'other-payer' } },
+      { amount: { total: 1, currency: 'CNY' } },
+      { attach: JSON.stringify({ v: 1, file_id: 2, user_id: 7, amount: 100 }) },
+      { attach: JSON.stringify({ v: 1, file_id: 1, user_id: 8, amount: 100 }) },
+    ]) {
+      const rejected = setup();
+      Object.assign(rejected.provider.order, patch);
+      expect(await rejected.call('POST', '/v2/wechat-pay/notify', {}, {}, callback.raw, callback.headers)).toMatchObject({ code: 'ERROR' });
+      expect(rejected.responseStatuses.at(-1)).toBe(500);
+      expect(rejected.requests).toHaveLength(1);
+      expect((await rejected.file())!.unlocked).toBe(0);
+      expect((await rejected.db.one('SELECT unlocked FROM file WHERE id=?', [2]))!.unlocked).toBe(0);
+    }
+    const missingReservation = setup({}, false);
+    expect(await missingReservation.call('POST', '/v2/wechat-pay/notify', {}, {}, callback.raw, callback.headers)).toMatchObject({ code: 'ERROR' });
+    expect(missingReservation.responseStatuses.at(-1)).toBe(500);
+    expect(missingReservation.requests).toHaveLength(0);
+    expect((await missingReservation.file())!.unlocked).toBe(0);
+  });
+
   it('verifies callback signatures before querying an order or changing file access', async () => {
     const f = setup(); const paid = notice();
-    await expect(f.call('POST', '/v2/wechat-pay/notify', {}, {}, paid.raw + ' ', paid.headers)).rejects.toThrow('签名');
+    await expect(f.call('POST', '/v2/wechat-pay/notify', {}, {}, paid.raw + ' ', paid.headers)).rejects.toThrow('Invalid Signature');
     expect(f.requests).toHaveLength(0);
     expect((await f.file())!.unlocked).toBe(0);
   });

@@ -1,11 +1,12 @@
 import type { Row, Services } from '../core/contracts';
 import { ApiError } from '../core/errors';
 import { defaultData } from '../v2/server';
+import { phpTrim } from '../core/php';
 
-function content(values: unknown): string[] { return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string' && value.trim() !== '').map(value => value.trim()) : []; }
+function content(values: unknown): string[] { return Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string' && phpTrim(value) !== '').map(value => phpTrim(value)) : []; }
 export function normalizeDevice(device: Row, setup: Row | null): Row {
   const title = String(setup?.title ?? '');
-  return { id: Number(device.id), version: Number(device.version ?? 0), uuid: String(device.uuid ?? ''), name: title.trim() && title.trim() !== '未知' ? title.trim() : String(device.tag || device.uuid || `设备 ${device.id}`), title, ip: String(device.ip ?? ''), status: 'unknown', createdAt: String(device.created_at ?? ''), updatedAt: String(setup?.updated_at || device.updated_at || ''), gameId: setup?.scene_id == null ? null : Number(setup.scene_id), slogans: content(setup?.slogans), pictures: content(setup?.pictures), thumbs: content(setup?.thumbs) };
+  return { id: Number(device.id), version: Number(device.version ?? 0), uuid: String(device.uuid ?? ''), name: phpTrim(title) && phpTrim(title) !== '未知' ? phpTrim(title) : String(device.tag || device.uuid || `设备 ${device.id}`), title, ip: String(device.ip ?? ''), status: 'unknown', createdAt: String(device.created_at ?? ''), updatedAt: String(setup?.updated_at || device.updated_at || ''), gameId: setup?.scene_id == null ? null : Number(setup.scene_id), slogans: content(setup?.slogans), pictures: content(setup?.pictures), thumbs: content(setup?.thumbs) };
 }
 export function validateConfiguration(input: unknown): Row {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ApiError(422, '设备配置必须为 JSON 对象');
@@ -14,12 +15,12 @@ export function validateConfiguration(input: unknown): Row {
   if (!Object.keys(patch).length || Object.keys(patch).some(key => !allowed.includes(key))) throw new ApiError(422, '请仅提交需要修改的设备名称、游戏、口号、图片或缩略图');
   if ('gameId' in patch && (!Number.isInteger(patch.gameId) || patch.gameId <= 0)) throw new ApiError(422, 'gameId 必须为有效的游戏编号');
   if ('title' in patch) {
-    if (typeof patch.title !== 'string' || [...patch.title.trim()].length > 255) throw new ApiError(422, 'title 必须为不超过 255 个字符的设备名称');
-    patch.title = patch.title.trim();
+    if (typeof patch.title !== 'string' || [...phpTrim(patch.title)].length > 255) throw new ApiError(422, 'title 必须为不超过 255 个字符的设备名称');
+    patch.title = phpTrim(patch.title);
     if (['utf8', 'utf8mb3'].includes((process.env.MYSQL_CHARSET ?? 'utf8mb4').toLowerCase()) && /[\u{10000}-\u{10FFFF}]/u.test(patch.title)) throw new ApiError(422, '设备名称暂不支持表情符号，请使用文字或数字');
   }
   for (const field of ['slogans', 'pictures', 'thumbs']) if (field in patch) {
-    if (!Array.isArray(patch[field]) || patch[field].some((value: unknown) => typeof value !== 'string')) throw new ApiError(422, `${field} 必须为字符串列表`);
+    if (!Array.isArray(patch[field]) || Object.keys(patch[field]).some((key, index) => key !== String(index)) || patch[field].some((value: unknown) => typeof value !== 'string')) throw new ApiError(422, `${field} 必须为字符串列表`);
     patch[field] = content(patch[field]);
   }
   return patch;

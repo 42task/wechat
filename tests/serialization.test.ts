@@ -15,4 +15,9 @@ describe('Yii XML object metadata', () => {
     expect(api.xmlResponse({ empty: null, text: '"<&\'"', flags: [true, false], zero: 0 })).toBe('<?xml version="1.0" encoding="UTF-8"?>\n<response><empty></empty><text>"&lt;&amp;\'"</text><flags><item>true</item><item>false</item></flags><zero>0</zero></response>\n');
     expect(api.xmlResponse(null)).toBe('');
   });
+  it('keeps PHP DOM Unicode element names and carriage returns', async () => {
+    const api = await import('../src/core/serialization');
+    expect(api.xmlResponse({ '中文': 'x\r\ny', 'foo:bar': 'value', 'bad key': 'fallback' })).toBe('<?xml version="1.0" encoding="UTF-8"?>\n<response><中文>x&#13;\ny</中文><foo:bar>value</foo:bar><item>fallback</item></response>\n');
+    expect(api.xmlResponse({ text: 'before\0after' })).toContain('<text>before</text>');
+  });
 });

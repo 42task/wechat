@@ -11,18 +11,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - database: mariadb:11.4
-            health: healthcheck.sh --connect --innodb_initialized
-          - database: mariadb:10.4
-            health: mysqladmin ping -h 127.0.0.1 -pwechat-local-test --silent
           - database: mysql:8.4
             health: mysqladmin ping -h 127.0.0.1 -pwechat-local-test --silent
     services:
       database:
         image: ${{ matrix.database }}
         env:
-          MARIADB_ROOT_PASSWORD: wechat-local-test
-          MARIADB_DATABASE: wechat_test
           MYSQL_ROOT_PASSWORD: wechat-local-test
           MYSQL_DATABASE: wechat_test
         ports: ['3306:3306']
@@ -71,7 +65,8 @@ jobs:
       github.event_name == 'push' && (
         github.ref == 'refs/heads/main' ||
         github.ref == 'refs/heads/develop' ||
-        github.ref == 'refs/heads/publish'
+        github.ref == 'refs/heads/publish' ||
+        github.ref == 'refs/heads/codex/yii-node-parity-20261112'
       )
     env:
       REGISTRY: hkccr.ccs.tencentyun.com
@@ -92,7 +87,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: latest=false
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/codex/yii-node-parity-20261112' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long,prefix=sha-
           labels: |

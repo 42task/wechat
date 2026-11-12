@@ -43,8 +43,8 @@ login and COS operations remain available.
 
 Signing credentials stay on the server. The client receives only mini program
 payment parameters, presigned object URLs, and scoped temporary STS credentials.
-Provider errors are sanitized so URLs containing application secrets, provider
-response details and signing material do not reach HTTP error messages.
+Provider error status, public SDK exception types and messages follow the current
+Yii actions. Local key material is never included in the comparison artifacts.
 
 ## Compatibility boundaries
 
@@ -70,28 +70,38 @@ response details and signing material do not reach HTTP error messages.
   unpaid states may omit attachment, amount and payer details and return false;
   unknown states are rejected.
 - Notifications validate the exact raw request body, trusted serial, RSA
-  signature, five minute signature window, authenticated AES-256-GCM payload,
-  merchant/AppID and event category before acknowledgment. A v2 paid callback
+  signature, signatures no more than five minutes old and authenticated AES-256-GCM
+  payload. Like the current Yii SDK, a valid signed future
+  timestamp is accepted. Signed unknown or cross-endpoint events receive the
+  source success acknowledgment without order queries, writes or hooks. A v2 paid callback
   queries WeChat again and performs the same file payment checks before granting
-  access; callback fields alone cannot unlock a file. Failed or still-unpaid
+  access, including the queried order's merchant/AppID, payer, amount and local
+  ownership binding; callback resource metadata has no additional merchant/AppID
+  gate and cannot itself unlock a file. The v1 paid/refund handlers retain their
+  acknowledgment-only behavior without order queries or accounting writes. Failed or still-unpaid
   confirmation returns HTTP 500 without success acknowledgment. Successfully
-  verified callbacks return JSON `{code: 'SUCCESS', message: '成功'}`, including
-  when the caller requests XML, matching the current Yii SDK response. An optional `onPaymentNotification`
+  verified JSON callbacks return JSON `{code: 'SUCCESS', message: '成功'}`, including
+  when the caller requests XML through Accept. An XML request body preserves the
+  current source SDK/controller's HTTP 500 `ERROR` failure after signature verification;
+  it never processes or acknowledges a payment. An optional `onPaymentNotification`
   hook remains available; hook failure prevents acknowledgment.
-- The old v2 controller incorrectly required a user Bearer on WeChat callbacks.
-  Callbacks now authenticate using the provider signature, while other v2
+- The current v2 controller exempts `notify` and `refund-notify` from user Bearer
+  authentication. Node retains the same provider-signature authentication, while other v2
   payment operations continue to require `v2-user` Bearer credentials.
-- The old `/v1/q-cloud/object-url` called an undefined `File::Create` method and
-  failed. This broken action is repaired to return `{url,method,expires}` using
-  COS signing. It does not create a fictional file record or accept a raw mode.
+- The current `/v1/q-cloud/object-url` calls an undefined `File::Create` method.
+  A valid key preserves the source HTTP 500 exception without COS traffic or
+  database writes; migration does not add the signing behavior described by its
+  outdated source comment. Parameter binding still follows the source action.
 - The v1 WeChat info SDK object serializes to `{}`, without exposing SDK configuration
   or secrets. The missing v2 info action and the unpublished v2 code action stay
   HTTP 404 and are not exposed as new endpoints.
-- STS grants are restricted to the configured bucket/region. The deprecated
-  `principal` policy member and nonexistent COS actions from the old request are
-  excluded. The configured bucket policy still supports the original upload,
-  download and multipart operations.
-- Current v1 token requests require `bucket` and default `region` to `ap-nanjing`;
+- STS requests retain the actual source policy, including `principal` and the
+  `GenerateSignURL` / `GetObjectUrl` action strings. They omit DurationSeconds so
+  the provider applies its default. The PHP oracle verifies the exact encoded
+  policy and headers using the original Tencent SDK with an injected transport;
+  real provider acceptance and account permissions still require external acceptance testing.
+- Current v1 token requests accept the caller's required `bucket` and optional
+  `region`, defaulting to `ap-nanjing`;
   v2 token requests use configured storage and ignore query overrides. An
   unconfigured cloud discovery response retains `{bucket:false,region:false}`.
 - Admin saved-image previews use the current device control scope and sign only
@@ -99,15 +109,12 @@ response details and signing material do not reach HTTP error messages.
   five-minute expiry, and the SDK-compatible `sign` parameter. Saved query strings,
   request overrides and fragments never reach signing; GET never creates setup.
 
-The source comparison uses committed Yii `64901c9ac79271aa54027c8c33abc6f1fa3c8394`;
-see `docs/HTTP-COMPATIBILITY-2026-10-24.md`. Intentional exceptions remain:
-unknown/cross-endpoint callback events and future timestamps beyond the five-minute
-window are rejected; invalid/empty callbacks fail cryptographic validation;
-nonpositive or unsafe v1
-payment amounts fail before provider traffic; provider error details are
-sanitized; STS cannot target arbitrary buckets; and the broken QCloud action is
-repaired as described above. Scene forwarding continues to verify HTTPS
-certificates. These exceptions do not weaken account ownership or payment checks.
+Provider comparison loads the current checkout of `game` at execution time;
+historical compatibility notes are not an oracle for current behavior. Missing
+local provider configuration stays distinct from an actual provider response:
+Node does not fabricate an old Tencent remote credential error when no request
+was made. Scene forwarding continues to verify HTTPS certificates. Account
+ownership, active-payment order checks and provider signatures remain enforced.
 
 ## Official protocol references
 
@@ -136,3 +143,15 @@ ownership checks, signed provider requery, and idempotent file unlocking with
 isolated SQLite records.
 They do not contact real WeChat accounts, issue real temporary credentials,
 charge payments, or establish production callback reachability.
+
+With the current Yii checkout and its Composer dependencies available, run the
+provider boundary comparisons without SQL, Redis or real provider traffic:
+
+```sh
+node --import tsx scripts/differential/provider-boundaries.ts
+node --import tsx scripts/differential/sts-boundaries.ts
+```
+
+The reports are `runtime/parity-validation/provider-boundaries.json` and
+`runtime/parity-validation/sts-boundaries.json`. STS compares original action
+bodies and the real SDK, replacing only its internally constructed HTTP transport.

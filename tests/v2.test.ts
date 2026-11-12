@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Context, Row, Services } from '../src/core/contracts';
 import { createHash } from 'node:crypto';
 import { AuthService } from '../src/core/auth';
+import { parsePhpJson, phpNumberType } from '../src/core/php';
 
 type Handler = (ctx: Context) => Promise<any> | any;
 function mysqlLike(value:unknown, pattern:unknown):boolean {
@@ -42,7 +43,7 @@ class MemoryDb {
     return result;
   }
   async one(sql: string, params: any[] = []) { return (await this.query(sql, params))[0] || null; }
-  async insert(table: string, data: Row) { const row = { ...(table === 'setup' ? { money: 0 } : {}), id: Math.max(0, ...this.tables[table].map(r => Number(r.id))) + 1, ...structuredClone(data) }; this.tables[table].push(row); return structuredClone(row); }
+  async insert(table: string, data: Row) { const row = { ...(['device','setup'].includes(table) ? { updated_at: '2000-01-01 00:00:00' } : {}), ...(table === 'device' ? { created_at: '2000-01-01 00:00:00' } : {}), ...(table === 'setup' ? { money: 0 } : {}), id: Math.max(0, ...this.tables[table].map(r => Number(r.id))) + 1, ...structuredClone(data) }; this.tables[table].push(row); return structuredClone(row); }
   async update(table: string, id: any, data: Row) { const row = this.tables[table].find(r => String(r.id) === String(id)); if (!row) throw new Error('Row missing'); Object.assign(row, structuredClone(data)); return structuredClone(row); }
   async execute(sql: string, params: any[] = []) {
     if (/^UPDATE user SET role = \? WHERE id = \?$/i.test(sql)) {
@@ -92,6 +93,81 @@ const devices = [{ id: 1, uuid: 'mine', tag: 'mine', ip: null }, { id: 2, uuid: 
 const controls = [{ id: 1, device_id: 1, user_id: 1 }];
 
 describe('v2 device and setup contracts', () => {
+  it('serializes unknown model fields as PHP empty arrays, including nested setup and public users',async()=>{
+    const f=await fixture({device:devices,control:controls,setup:[{id:7,device_id:1,title:'Studio'}],user:[{id:1,tel:'123',role:'manager'}],file:[{id:1,user_id:1,unionid:'u',key:'owned-file'}]},{id:1,unionid:'u',role:'manager'});
+    for(const path of ['/v2/devices/1','/v2/setups/7','/v2/files/1']) expect((await f.request('GET',path,{}, {fields:'unknown'})).value).toEqual([]);
+    expect((await f.request('GET','/v2/devices',{}, {fields:'unknown'})).value).toEqual([[]]);
+    expect((await f.request('GET','/v2/devices/1',{}, {fields:'unknown,setup.unknown,admin.unknown',expand:'setup,admin'})).value).toEqual({setup:[],admin:[[]]});
+    expect((await f.request('PATCH','/v2/devices/1',{tag:'changed'},{fields:'unknown'})).value).toEqual([]);
+    expect(f.db.tables.device[0].tag).toBe('changed');
+  });
+  it('retains request numeric lexemes through setup response serialization and field selection',async()=>{
+    const f=await fixture({device:devices,control:controls});
+    const response=await f.request('POST','/v2/setups',parsePhpJson('{"device_id":1,"money":250.0}'),{fields:'money'});
+    expect(response.value).toEqual({money:250});
+    expect(phpNumberType(response.value,'money')).toBe('double');
+  });
+  it.each(['x',null,[]])('DeviceSearch setup=%s retains the source read-only-property exception before searching',async setup=>{
+    const f=await fixture({device:devices,control:controls});
+    const query=vi.spyOn(f.db,'query');
+    await expect(f.request('GET','/v2/devices/manage',{}, {DeviceSearch:{id:'invalid',setup}})).rejects.toMatchObject({status:500,responseBody:{name:'Exception',message:'Setting read-only property: app\\modules\\v2\\models\\DeviceSearch::setup',code:0,type:'yii\\base\\InvalidCallException'}});
+    expect(query).not.toHaveBeenCalled();
+  });
+  it('also preserves read-only setup failure for the flat search fixture representation',async()=>{
+    const f=await fixture({device:devices,control:controls});
+    await expect(f.request('GET','/v2/devices/manage',{}, {'DeviceSearch[setup]':'x'})).rejects.toMatchObject({status:500,responseBody:{type:'yii\\base\\InvalidCallException'}});
+  });
+  it.each(['[]','{}'])('uuid=%s passes source empty validation but fails SQL string conversion without writing',async raw=>{
+    const f=await fixture({device:[{...devices[0],updated_at:'2000-01-01 00:00:00'}],control:controls});
+    const before=structuredClone(f.db.tables.device),update=vi.spyOn(f.db,'update');
+    await expect(f.request('PATCH','/v2/devices/1',parsePhpJson('{"uuid":'+raw+'}'))).rejects.toMatchObject({status:500,responseBody:{name:'PHP Warning',message:'Array to string conversion',code:2,type:'yii\\base\\ErrorException'}});
+    expect(update).not.toHaveBeenCalled();
+    expect(f.db.tables.device).toEqual(before);
+  });
+  it('returns other field validation errors before an empty uuid reaches SQL conversion',async()=>{
+    const f=await fixture({device:devices,control:controls});
+    await expect(f.request('PATCH','/v2/devices/1',{uuid:[],tag:true})).rejects.toMatchObject({status:422,responseBody:[{field:'tag',message:'Tag must be a string.'}]});
+    expect(f.db.tables.device[0].uuid).toBe('mine');
+  });
+  it('matches PHP associative JSON arrays and strict integer/float dirty tracking', async () => {
+    const oldTime='2000-01-01 00:00:00';
+    const f=await fixture({device:devices,control:controls,setup:[{id:7,device_id:1,money:250,slogans:[],updated_at:oldTime}]});
+    const update=vi.spyOn(f.db,'update');
+    expect((await f.request('PATCH','/v2/setups/7',parsePhpJson('{"slogans":{},"money":250.0}'))).value.updated_at).toBe(oldTime);
+    expect(update).not.toHaveBeenCalled();
+    expect((await f.request('PATCH','/v2/setups/7',parsePhpJson('{"money":250}'))).value.updated_at).toEqual({expression:'NOW()',params:[]});
+    expect(update).toHaveBeenCalledOnce();
+    const changed=await f.request('PATCH','/v2/setups/7',parsePhpJson('{"money":{},"pictures":{"0":"first","1":"second"}}'));
+    expect(changed.value).toMatchObject({money:[],pictures:['first','second']});
+    expect(f.db.tables.setup[0].money).toBe(0);
+  });
+  it('retains a near-integer model value while PHP integer SQL casting truncates it', async () => {
+    const f=await fixture({device:devices,control:controls,setup:[{id:7,device_id:1,scene_id:42,money:250}]});
+    const response=await f.request('PATCH','/v2/setups/7',parsePhpJson('{"scene_id":28.999999999999993}'));
+    expect(response.value.scene_id).toBe(28.999999999999993);
+    expect(f.db.tables.setup[0].scene_id).toBe(28);
+  });
+  it('keeps clean device/setup updates unchanged without writing SQL or timestamp expressions', async () => {
+    const original = '2000-01-01 00:00:00';
+    const f = await fixture({ device: [{ ...devices[0], updated_at: original, shop_id: 9 }], control: controls,
+      setup: [{ id: 7, device_id: 1, title: 'Studio', slogans: ['keep'], updated_at: original }] });
+    const update = vi.spyOn(f.db, 'update');
+    for (const body of [{}, { tag: 'mine' }, { version: 999 }, { shop_id: 88 }]) {
+      const result = await f.request('PATCH', '/v2/devices/1', body);
+      expect(result.value).toMatchObject({ shop_id: 9, updated_at: original });
+    }
+    for (const body of [{}, { slogans: ['keep'] }]) {
+      expect((await f.request('PATCH', '/v2/setups/7', body)).value.updated_at).toBe(original);
+    }
+    expect(update).not.toHaveBeenCalled();
+  });
+  it('does not persist client timestamps over SQL NOW when a safe attribute changes', async () => {
+    const f = await fixture({ device: [{ ...devices[0], updated_at: '2000-01-01 00:00:00' }], control: controls });
+    const update = vi.spyOn(f.db, 'update');
+    const result = await f.request('PATCH', '/v2/devices/1', { tag: 'renamed', updated_at: '1900-01-01 00:00:00' });
+    expect(update).toHaveBeenCalledWith('device', 1, { tag: 'renamed' });
+    expect(result.value.updated_at).toEqual({ expression: 'NOW()', params: [] });
+  });
   it('treats percent underscore and backslash in device search as literal characters',async()=>{
     const rows=['unit_1','unitx1','unit%1','unit\\1'].map((uuid,index)=>({id:index+1,uuid}));
     const f=await fixture({device:rows,control:rows.map(row=>({device_id:row.id,user_id:1}))});
@@ -131,7 +207,7 @@ describe('v2 device and setup contracts', () => {
   });
   it('uses Yii numeric syntax for setup money and skips optional empty arrays',async()=>{
     const f=await fixture({device:devices,control:controls,setup:[{id:7,device_id:1,money:250,scene_id:1}]});
-    for(const money of ['0x10',' ','1.',' 1',true,false,[1],{}]) {
+    for(const money of ['0x10',' ','1.',' 1',true,false,[1]]) {
       await expect(f.request('PATCH','/v2/setups/7',{money})).rejects.toMatchObject({status:422});
       expect(f.db.tables.setup[0].money).toBe(250);
     }
@@ -193,6 +269,15 @@ describe('v2 device and setup contracts', () => {
 });
 
 describe('v2 server initialization and rendezvous', () => {
+  it('does not add null Redis attributes which Yii did not load', async () => {
+    const f = await fixture({ device: devices });
+    const token = 'A0123456789abcdef0123456789abcdef';
+    const result = await f.request('POST', '/v2/server/device', { token, uuid: 'mine' }, { expand: 'device' });
+    expect(result.value.data.device).toEqual({ uuid: 'mine', device_id: 1 });
+    const stored = await f.request('GET', '/v2/server/log', {}, { token });
+    expect(stored.value.data.report).not.toHaveProperty('status');
+    expect(stored.value.data.report).not.toHaveProperty('data');
+  });
   it('keeps existing status and data when PHP-empty JSON containers are supplied',async()=>{
     const f=await fixture({device:[{id:1,uuid:'existing',version:1}]});
     await f.redis.save('report',{token:'bound',uuid:'existing',device_id:1,status:'ready',data:'previous'});

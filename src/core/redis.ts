@@ -14,7 +14,8 @@ export function adminRedisOptions(env: NodeJS.ProcessEnv = process.env): RedisCo
 
 export function buildRedisKey(value: unknown): string {
   const key = String(value);
-  return /^[-+]?\d+(?:\.\d+)?$/.test(key) || /^[a-zA-Z0-9]{1,32}$/.test(key) ? key : createHash('md5').update(key).digest('hex');
+  const numeric = /^[ \t\n\r\f\v]*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?[ \t\n\r\f\v]*$/.test(key);
+  return numeric || /^[a-zA-Z0-9]{1,32}$/.test(key) ? key : createHash('md5').update(key).digest('hex');
 }
 export class LegacyRedis {
   private readonly client;
