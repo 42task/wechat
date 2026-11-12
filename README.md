@@ -18,7 +18,7 @@ npm start
 
 Web 管理端使用当前 Yii 的独立 `game-admin` ES256 Bearer JWT，登录和扫码消费返回 `{user,token,authMode:"jwt"}`，通过 `/admin-api/refresh` 轮换刷新令牌，退出撤销整次登录。访问令牌最长三小时，刷新不会延长原八小时期限。扫码浏览器凭据使用现有 `X-Admin-Scan-Owner` 请求头；管理端不要求 Cookie 或 CSRF。
 
-沿用相同 `ADMIN_JWT_KEY` / `ADMIN_JWT_PUB_KEY`、`ADMIN_AUTH_ISSUER` 以及 `ADMIN_AUTH_REDIS_*` 后，Yii 与 Node 可共享管理令牌、刷新状态、密码限流和扫码 owner 锁。认证 Redis 独立于业务 Redis 配置，连接失败返回 503。小程序继续使用原 HS256 Bearer Token，v1/v2 与管理身份域严格隔离。设备支持原 time/hash 协议；本次 b0 经用户明确批准设置 `GAME_DEV_AUTH=1`，延续其 Yii dev 免签策略，b1 保持 `GAME_DEV_AUTH=0`。扫码 create/approve 的 Yii FileCache 与 Node SQL 限流计数不共享。
+沿用相同 `ADMIN_JWT_KEY` / `ADMIN_JWT_PUB_KEY`、`ADMIN_AUTH_ISSUER` 以及 `ADMIN_AUTH_REDIS_*` 后，Yii 与 Node 可共享管理令牌、刷新状态、密码限流和扫码 owner 锁。认证 Redis 独立于业务 Redis 配置，连接失败返回 503。小程序继续使用原 HS256 Bearer Token，v1/v2 与管理身份域严格隔离。本次 b0、b1 均经用户分别明确批准设置 `GAME_DEV_AUTH=1`，延续各自 Yii `YII_ENV=dev` 的设备免签策略：设备 refresh 鉴权跳过 time/hash 和 token 格式检查，仍需 token 及唯一的 uuid/id/key；小程序 JWT 和支付回调验签保持原规则。扫码 create/approve 的 Yii FileCache 与 Node SQL 限流计数不共享。
 
 ## 数据库
 
@@ -44,15 +44,18 @@ npm run migrate -- --bootstrap
 
 2026-11-12 本轮逻辑候选已完成真实隔离 MySQL/Redis **1,257/1,257** 回归（0 失败、0 跳过），实际 Yii / 编译版 Node HTTP 与业务差分 **883/884**（v1 新增边界复测为 97/97），仅保留诊断 Bearer 脱敏，没有未解释的差分。实际部署应用仍为 `4bcd38b83f42bf6333d1758e48f1b9c8007ad55c`，其 [CI 与固定 SHA 镜像发布](https://github.com/42task/wechat/actions/runs/43238081426) 均成功；补充验证提交 `1bf66a3` 的 [CI 43244233055](https://github.com/42task/wechat/actions/runs/43244233055) verify 成功、publish 按条件跳过，没有替换已部署应用版本。
 
-| 当前入口 | 运行状态 |
+| 当前架构 / 入口 | 运行状态 |
 | --- | --- |
-| `x.b0.01xr.com` | 仅此 Host 已切到 Node `4bcd38b`；设备免签设置经明确批准，原 Yii 保留用于回滚 |
-| `x2.b1.01xr.com` | 候选 Node 已更新到同一 `4bcd38b` 镜像；设备校验策略保持原设置 |
-| `x.b1.01xr.com` | 业务入口仍为 Yii `64901c9`，未切换 |
+| 前端 f：`c.4mr.cn` | 实际运行的 Nginx 将管理 API 按 50%/50% 分到 b0/b1，彼此互为 backup；小程序网关以 b0 为主、b1 为备 |
+| `x2.b0.01xr.com`、`x2.b1.01xr.com` | 前端实际使用的两个 Node 上游；两台 Node 均保留这两个 Host 别名，TLS 验证开启，公共 Host/SNI 为 `x2.b0.01xr.com` |
+| `x.b0.01xr.com` | 此规范业务 Host 已切到 Node `4bcd38b`；设备免签设置经明确批准，原 Yii 保留用于回滚 |
+| `x.b1.01xr.com` | 已按后续明确批准切到同一 Node `4bcd38b` 镜像，并启用设备免签；原 Yii 保留用于回滚 |
 
-两处 Node 入口各 **11/11**、合计 **22/22** 只读检查通过，包括健康、五个公开文件、禁止路径、文件 Bearer 要求和 OPTIONS。b1 按自己的 Yii 核对 **24/24** 项环境映射、**6/6** 个密钥文件字节及可读性，并修正了其独立的 `ADMIN_SCAN_LOGIN_ORIGIN`，没有照搬 b0。没有运行数据库迁移、Stack 整体重部署、辅助任务或业务写入；`x.4mr.cn` 及其他域名保持原状。最初的多 Host 草案被自动审批拒绝，已在实际应用前收窄为上述单一 b0 Host。
+当前 b1 容器为 `2ff62e`（11 月 12 日 23:57:58 创建），已恢复 Node 原有的统一扫码 origin `c.4mr.cn`。此前复制 b1 Yii 的废弃 `checkin.voxel.cn` 是本轮配置错误，已说明并修正；因此当前与 b1 Yii 的环境映射是 **23/24**，唯一差异是这项有意保留的退役 origin 例外。两台实际 Node 已核实共享同一 MySQL 数据库及票据表、业务/管理 Redis 实例与 DB、六个密钥文件和管理 issuer。实际前端配置及两个不同服务器的上游已核实，不能再称 `x2` Node 为“未使用”；没有据此推断历史请求量。
 
-较早 d829 候选的 fixture 对照 **24/24**、无对象写入探测 **8/8** 及清理记录保留为历史证据，不继承为新候选的真实业务联调。真实微信/手机号、支付退款回调、COS 对象和实体设备联调按用户决定延期。旧主域名 `x.4mr.cn` 仍运行 `c4e088a` 的旧协议，独立旧版对照仅 **2/12** 一致，包含省略支付 `file_id` 等差异，不能宣称透明替换。保留边界及 UI 输出事件记录见 [验证记录](docs/VALIDATION.md)，可复跑旧协议核对见 [旧主域名兼容性](docs/LEGACY_MAIN_COMPATIBILITY.md)。
+11 月 13 日的集群验证仅插入 **1** 条自有 pending 票据，经真实前端分别强制走 b0/b1 执行 **4** 次状态读取、在 b1 取消 **1** 次，两台均看到 cancelled；自有票据、owner lock、临时代码和私有 ledger 均已清理。没有调用 HTTP 创建票据、全局清理、限流写入、批准、登录、消费、真实账号或供应商。首次 `CLIENT INFO` 预检在任何数据写入前失败，修正 helper 的实例/DB 绑定后才完成上述成功运行。11 月 12 日 23:23:55 的两入口 **22/22** 与 23:44:34 的 b1 业务入口 **11/11** 只读检查分别保留历史时间和范围，不等于全部接口证明。没有 DDL、数据库迁移、Stack 整体重部署或辅助任务；本轮数据写入只涉及上述已清理的自有 fixture。
+
+用户已确认当前范围是 **f → b0/b1**，旧二维码、缺省/显式 v0 和 `x.4mr.cn` 已停用，`checkin.voxel.cn` 也已退役，统一使用 `c.4mr.cn`。旧主线 **2/12** 对照只保留为历史参考，不再是当前替换门槛，也不宣称旧协议透明兼容；本轮没有修改旧基础设施。当前活动后端已可由 Node 替换且两台都在使用，仍保留唯一 Bearer 脱敏差异及已知边界。真实微信/手机号、支付退款回调、COS 对象和实体设备联调继续按用户决定延期。详细范围及 UI 输出事件见 [验证记录](docs/VALIDATION.md)。
 
 ```sh
 npm run build
@@ -94,7 +97,7 @@ docker compose up -d
 
 `compose.yaml` 只启动后端，连接 `.env` 中指定的数据库和 Redis，不部署前端。证书、JWT 密钥通过只读挂载或平台 Secret 注入，容器以 `node` 用户运行，须保证该用户能读取密钥。`TRUST_PROXY` 仅在已有可信反向代理后启用，保证请求 origin 和 IP 限流使用正确地址。原管理端代理继续转发 Bearer 和 owner proof，保留目前清除 Cookie/CSRF 的设置。
 
-b0 / b1 今后复用同一已验证镜像时，使用 [compose.image.yaml](compose.image.yaml) 和 [分环境部署说明](docs/DEPLOYMENT-B0-B1.md)，分别保留各自的路由、origin、连接、密钥卷及设备策略。
+b0 / b1 今后复用同一已验证镜像时，使用 [compose.image.yaml](compose.image.yaml) 和 [分环境部署说明](docs/DEPLOYMENT-B0-B1.md)，保留每台 Node 的两个 `x2` 别名、统一扫码 origin、共享连接/密钥及明确批准的设备策略。[部署预检脚本](scripts/check-image-deployment.py) 检查五项镜像构建元数据覆盖；[集群票据验证脚本](scripts/acceptance/scan-cluster.cjs) 提供显式授权的单行验证及精确清理。应用与 CI 不自动执行线上验证；CI 仅运行不访问外部服务的合成 `--self-test`。
 
 如果沿用 `SCENE_SERVER_BASE_URL=http://y1-p:8080` 或其他现有 Docker 服务名，使用 `BACKEND_NETWORK=proxy docker compose -f compose.yaml -f compose.proxy.yaml up -d` 接入对应的既有网络；该网络必须预先存在，名称可按部署修改。密钥挂载、域名入口与外部回调可达性在切换前验收。支付通知默认保留 Yii 由请求 origin 生成的对应 `/v1/wechat-pay/notify` 或 `/v2/wechat-pay/notify`，也支持显式通知 URL。
 

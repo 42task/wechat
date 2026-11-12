@@ -62,6 +62,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - name: Verify scan fixture ownership and cleanup guards without external access
+        run: node scripts/acceptance/scan-cluster.cjs --self-test
       - run: npm run migrate -- --bootstrap
       - run: npm test
       - run: npm run parity -- --source-root .oracle/game

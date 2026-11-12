@@ -77,8 +77,13 @@ function onlineAcceptance(): ObjectRow {
   const mapping = read('environment-mapping.json');
   const current = read('post-4bcd-deployment.json'), currentBuild = read('candidate-4bcd.json');
   const legacyMain = read('legacy-main-audit.json');
-  const b0 = read('b0-cutover-4bcd.json'), b1 = read('b1-deployment-4bcd.json');
+  const b0 = read('b0-cutover-4bcd.json'), b1 = read('b1-cluster-origin-4bcd.json');
+  const b1Cutover = read('b1-cutover-4bcd.json');
+  const earlierB1 = read('b1-deployment-4bcd.json');
   const readonly = read('cutover-readonly.json');
+  const b1Readonly = read('b1-cutover-readonly.json'), hostMatrix = read('host-routing-matrix.json');
+  const frontend = read('frontend-runtime-routing.json'), sharedCluster = read('shared-cluster-identity.json');
+  const scanCluster = read('scan-cluster-latest.json'), retired = read('retired-entrypoints.json');
   const legacyComparison = read('logic-phase-state.json').additionalValidatedCoverage?.legacyComparison;
   const identifier = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{7,64}$/.test(value) ? value : null;
   const digest = (value: unknown) => typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value) ? value : null;
@@ -91,9 +96,17 @@ function onlineAcceptance(): ObjectRow {
   const counts = (value: ObjectRow | undefined) => ({ total: count(value?.total), passed: count(value?.passed), failed: count(value?.failed) });
   const publicHosts = new Set(['x.b0.01xr.com', 'x2.b1.01xr.com']);
   const readonlyPaths = new Set(['/HyffLvU10s.txt', '/YnLzIY5Yjs.txt', '/robots.txt', '/favicon.ico', '/css/site.css', '/health', '/.env', '/index.php', '/manifest.json', '/v2/files/list', '/v2/files']);
+  const projectChecks = (checks: unknown) => (Array.isArray(checks) ? checks : []).filter((check: ObjectRow) => readonlyPaths.has(check.path) && ['GET', 'OPTIONS'].includes(check.method)).map((check: ObjectRow) => ({
+    method: check.method, path: check.path, expectedStatus: count(check.expectedStatus), actualStatus: count(check.actualStatus), passed: boolean(check.passed),
+  }));
+  const clusterChecks = ['sameMysqlDatabase', 'ticketTablePresentBoth', 'sameBusinessRedis', 'sameAdminRedis', 'sameSixKeyFiles', 'sameAdminIssuer', 'canonicalOriginMatchesBoth'];
+  const scanChecks = ['compiledOriginAndIssuerMatch', 'localNodeHealth', 'frontB0Health', 'frontB1Health', 'triggerMetadataVisibilityConfirmed', 'ticketTableHasNoTriggersOrIncomingReferences', 'randomMarkersAndOwnerLockPreAbsent', 'frontB0Pending', 'frontB1Pending', 'frontB1Cancel', 'frontB0Cancelled', 'frontB1Cancelled', 'exactOwnedCancelledRow'];
+  const scanCleanup = ['ownedTicketRemoved', 'ticketAbsent', 'ownerLockAbsent', 'insertOutcomeResolved', 'complete'];
+  const scanLimits = ['ticketCreationNotExecuted', 'qrGenerationNotTested', 'noRealApprovalOrLogin', 'noRateLimitWrites', 'noRealAccountAccess', 'ledgerDoesNotSurviveContainerRemoval', 'redisRestartBlocksAutomaticRecovery', 'aliasesAloneDoNotProveDistinctProcesses'];
+  const x2PeerUrls = new Set(['https://x2.b0.01xr.com', 'https://x2.b1.01xr.com']);
   const paymentChecks = ['miniAppConfigured', 'merchantConfigured', 'apiV3KeyLengthValid', 'signingKeyReadable', 'signingRoundTrip', 'platformKeysReadable', 'merchantCertificatePresent', 'merchantCertificateMatchesPrivate', 'merchantCertificateCurrent', 'merchantSerialMatchesCertificate', 'appInitialization', 'available'];
   return {
-    evidenceScope: 'b0 仅 x.b0.01xr.com 已切到 Node 4bcd38b，原 Yii 保留回滚；b1 仅更新 x2.b1.01xr.com 候选，x.b1.01xr.com 仍为 Yii。旧主域名和其他域名保持原状。较早 d829 的有限业务验收单独列示。',
+    evidenceScope: '用户确认活动范围为 f → b0/b1；实际前端通过两个 x2 上游使用 Node 4bcd38b，原 Yii 保留回滚。当前活动后端已可由 Node 替换且两台都在使用。旧二维码、x.4mr.cn 和 checkin.voxel.cn 已停用，旧版对照只留参考；外部联调继续延期。',
     currentCandidate: { commit: identifier(current.commit), digest: digest(current.digest), ci: ciUrl(currentBuild.ciRun), ciVerify: state(currentBuild.verify), ciPublish: state(currentBuild.publish), ciTests: count(currentBuild.ciMySqlTests) },
     verificationCi: { commit: '1bf66a3fe4c89e0e89443984568733b2a868a8a6', run: 'https://github.com/42task/wechat/actions/runs/43244233055', verify: 'success', publish: 'skipped', applicationSourceChanged: false },
     currentDeployment: {
@@ -103,28 +116,60 @@ function onlineAcceptance(): ObjectRow {
         businessEntryCutover: boolean(b0.businessEntryCutover), routePriority: count(b0.priority), originalLabelsPreserved: count(b0.originalLabelsPreserved), addedRouteLabels: count(b0.addedRouteLabels),
         deviceSignatureExemptionEnabled: b0.deviceMode === '1', deviceModeExplicitlyApproved: boolean(b0.deviceModeExplicitlyApproved),
         originalYiiContainer: identifier(b0.originalYiiContainer), originalYiiHealthy: boolean(b0.originalYiiHealthy),
-        databaseMigrations: boolean(b0.databaseMigrations), businessFixtureWrites: boolean(b0.businessFixtureWrites), stackRedeploy: boolean(b0.stackRedeploy), auxiliaryJobsRestarted: boolean(b0.auxiliaryJobsRestarted), otherHostRulesChanged: boolean(b0.otherHostRulesChanged),
+        databaseMigrations: boolean(b0.databaseMigrations), businessFixtureWritesDuringCutover: boolean(b0.businessFixtureWrites), stackRedeploy: boolean(b0.stackRedeploy), auxiliaryJobsRestarted: boolean(b0.auxiliaryJobsRestarted), otherHostRulesChanged: boolean(b0.otherHostRulesChanged),
       },
       b1: {
-        commit: identifier(b1.commit), digest: digest(b1.digest), createdAtShanghai: timestamp(b1.createdAtShanghai), nodeContainer: identifier(b1.nodeContainer), health: state(b1.health),
-        candidateHost: b1.healthUrl === 'https://x2.b1.01xr.com/health' ? 'x2.b1.01xr.com' : null,
-        businessHost: b1.businessEntry === 'https://x.b1.01xr.com' ? 'x.b1.01xr.com' : null,
-        businessEntryCutover: boolean(b1.businessEntryCutover), originalYiiCommit: identifier(b1.originalYiiCommit), originalYiiContainer: identifier(b1.originalYiiContainer), originalYiiHealthy: boolean(b1.originalYiiHealthy),
-        strictDeviceSignaturePolicyRetained: b1.deviceMode === '0', routingLabelsUnchanged: boolean(b1.routingLabelsUnchanged),
-        businessMappingsCompared: count(b1.businessMappingsCompared), businessMappingsEqual: count(b1.businessMappingsEqual), scanLoginOriginAlignedToOwnYii: boolean(b1.scanOriginCopiedFromOwnYii),
-        keyFilesCompared: count(b1.keyFilesCompared), keyFilesContentEqual: count(b1.keyFilesContentEqual), keyFilesReadableOnBothSides: boolean(b1.keyFilesReadableOnBothSides), keyVolumeReadonly: boolean(b1.keyVolumeReadonly),
-        databaseMigrations: boolean(b1.databaseMigrations), businessFixtureWrites: boolean(b1.businessFixtureWrites), stackRedeploy: boolean(b1.stackRedeploy), auxiliaryJobsRestarted: boolean(b1.auxiliaryJobsRestarted),
+        commit: identifier(b1.commit), digest: digest(b1.digest), createdAtShanghai: timestamp(b1.createdAtShanghai), nodeContainer: identifier(b1.nodeContainer), frontendHealthVerified: boolean(scanCluster.checks?.frontB1Health),
+        businessHost: b1.canonicalHost === 'x.b1.01xr.com' ? 'x.b1.01xr.com' : null,
+        businessEntryCutover: boolean(b1.businessEntryCutover), originalLabelsPreserved: count(b1.originalLabelsPreserved), addedCanonicalRouteLabels: count(b1.addedCanonicalRouteLabels),
+        originalYiiCommit: identifier(b1Cutover.originalYiiCommit), originalYiiContainer: identifier(b1Cutover.originalYiiContainer),
+        deviceSignatureExemptionEnabled: b1.deviceMode === '1', deviceModeExplicitlyApproved: boolean(b1.deviceModeExplicitlyApproved),
+        canonicalScanOriginExplicitlyRequested: boolean(b1.canonicalScanOriginExplicitlyRequested), restoresOriginalNodeScanOrigin: boolean(b1.restoresOriginalNodeScanOrigin), frontendX2AliasesPreserved: boolean(b1.frontendX2AliasesPreserved), keyVolumeReadonly: boolean(b1.keyVolumeReadonly),
+        comparableYiiValues: count(b1.sourceComparableValues), equalYiiValues: count(b1.sourceValuesEqual), deprecatedYiiScanOriginIsIntentionalException: b1.sourceComparableValues === 24 && b1.sourceValuesEqual === 23 && b1.restoresOriginalNodeScanOrigin === true,
+        databaseMigrations: boolean(b1.databaseMigrations), businessWritesOutsideOwnedFixture: boolean(b1.businessWritesOutsideOwnedFixture), stackRedeploy: boolean(b1.stackRedeploy), auxiliaryJobsRestarted: boolean(b1.auxiliaryJobsRestarted),
       },
       approvalReview: { initialMultiHostDraftRejected: true, narrowedToSingleB0HostBeforeApply: true },
     },
-    readonlyVerification: {
+    frontendRuntimeRouting: {
+      observedAtUtc: timestamp(frontend.observedAtUtc), container: identifier(frontend.container), createdAtShanghai: timestamp(frontend.createdAtShanghai), canonicalFrontend: frontend.canonicalFrontend === 'https://c.4mr.cn' ? 'https://c.4mr.cn' : null,
+      managementPeers: (Array.isArray(frontend.managementPeers) ? frontend.managementPeers : []).filter((peer: unknown) => x2PeerUrls.has(peer as string)),
+      managementPrimaryPercentages: (Array.isArray(frontend.managementPrimaryPercentages) ? frontend.managementPrimaryPercentages : []).map((value: unknown) => count(value)), managementMutualBackup: boolean(frontend.managementMutualBackup),
+      miniprogramGatewayEnabled: boolean(frontend.miniprogramGatewayEnabled), miniprogramPrimary: x2PeerUrls.has(frontend.miniprogramPrimary) ? frontend.miniprogramPrimary : null, miniprogramBackup: x2PeerUrls.has(frontend.miniprogramBackup) ? frontend.miniprogramBackup : null,
+      sharedManagementHostAndSniIsX2B0: frontend.sharedManagementHostAndSni === 'x2.b0.01xr.com', miniprogramHostAndSniIsX2B0: frontend.miniprogramHostAndSni === 'x2.b0.01xr.com', tlsVerificationConfigured: boolean(frontend.tlsVerificationConfigured),
+      peersResolveToDistinctServers: typeof frontend.frontendDns?.['x2.b0.01xr.com'] === 'string' && typeof frontend.frontendDns?.['x2.b1.01xr.com'] === 'string' && frontend.frontendDns['x2.b0.01xr.com'] !== frontend.frontendDns['x2.b1.01xr.com'],
+      generatedNginxConfigurationRead: boolean(frontend.generatedNginxConfigurationRead), backendSpecificProxyPathsVerified: boolean(frontend.backendSpecificProxyPathsVerified), frontendConfigurationChanged: boolean(frontend.frontendConfigurationChanged), formerUnusedCandidateAssumptionNotUsed: boolean(frontend.formerUnusedCandidateAssumptionNotUsed),
+    },
+    sharedClusterIdentity: { observedAtUtc: timestamp(sharedCluster.observedAtUtc), ...Object.fromEntries(clusterChecks.map(key => [key, boolean(sharedCluster[key])])) },
+    scanClusterFixture: {
+      runId: runId(scanCluster.runId), applicationCommit: identifier(scanCluster.applicationCommit), observedAtUtc: timestamp(scanCluster.observedAtUtc), passed: boolean(scanCluster.passed), cleanupOnly: boolean(scanCluster.cleanupOnly),
+      counts: { insertedTickets: count(scanCluster.counts?.insertedTickets), statusReads: count(scanCluster.counts?.statusReads), cancellations: count(scanCluster.counts?.cancellations) },
+      checks: Object.fromEntries(scanChecks.map(key => [key, boolean(scanCluster.checks?.[key])])), cleanup: Object.fromEntries(scanCleanup.map(key => [key, boolean(scanCluster.cleanup?.[key])])), limitations: Object.fromEntries(scanLimits.map(key => [key, boolean(scanCluster.limitations?.[key])])),
+      independentFrontendPeerRoutingVerified: boolean(scanCluster.independentFrontendPeerRoutingVerified), temporaryProbeRemoved: boolean(scanCluster.temporaryProbeRemoved), completedPrivateLedgerRemoved: boolean(scanCluster.completedPrivateLedgerRemoved),
+      earlierClientInfoPreflightFailedBeforeAnyDataWrite: true, helperBindingCorrectedBeforeSuccessfulRun: true,
+    },
+    retiredEntrypoints: { confirmedByUser: boolean(retired.confirmedByUser), deviceQrVersionZeroAndMissingVersionRetired: boolean(retired.deviceQrVersionZeroAndMissingVersionRetired), legacyApiRetired: boolean(retired.legacyApiRetired), legacyInfrastructureChanged: boolean(retired.legacyInfrastructureChanged), legacyCodeStillRetainedForReference: boolean(retired.legacyCodeStillRetainedForReference), canonicalFrontendAndScanOriginIsC4mr: retired.canonicalFrontendAndScanOrigin === 'https://c.4mr.cn' },
+    earlierB1BusinessReadonlyVerification: {
+      startedAt: timestamp(b1Readonly.startedAt), finishedAt: timestamp(b1Readonly.finishedAt), expectedGitCommit: identifier(b1Readonly.expectedGitCommit),
+      host: b1Readonly.host === 'x.b1.01xr.com' ? 'x.b1.01xr.com' : null, ready: boolean(b1Readonly.ready),
+      counts: { expected: count(b1Readonly.counts?.expected), executed: count(b1Readonly.counts?.executed), passed: count(b1Readonly.counts?.passed), failed: count(b1Readonly.counts?.failed), notExecuted: count(b1Readonly.counts?.notExecuted) },
+      checks: projectChecks(b1Readonly.checks),
+    },
+    earlierB1CandidateDeployment: {
+      commit: identifier(earlierB1.commit), createdAtShanghai: timestamp(earlierB1.createdAtShanghai), nodeContainer: identifier(earlierB1.nodeContainer), health: state(earlierB1.health),
+      candidateHost: earlierB1.healthUrl === 'https://x2.b1.01xr.com/health' ? 'x2.b1.01xr.com' : null,
+      businessEntryCutover: boolean(earlierB1.businessEntryCutover), strictDeviceSignaturePolicyAtThatTime: earlierB1.deviceMode === '0',
+      scanLoginOriginAlignedToOwnYii: boolean(earlierB1.scanOriginCopiedFromOwnYii),
+    },
+    earlierTwoHostReadonlyVerification: {
       finishedAt: timestamp(readonly.finishedAt), expectedGitCommit: identifier(readonly.expectedGitCommit), counts: counts(readonly.counts),
       hosts: (Array.isArray(readonly.hosts) ? readonly.hosts : []).filter((host: ObjectRow) => publicHosts.has(host.host)).map((host: ObjectRow) => ({
-        host: host.host, counts: counts(host.counts),
-        checks: (Array.isArray(host.checks) ? host.checks : []).filter((check: ObjectRow) => readonlyPaths.has(check.path) && ['GET', 'OPTIONS'].includes(check.method)).map((check: ObjectRow) => ({
-          method: check.method, path: check.path, expectedStatus: count(check.expectedStatus), actualStatus: count(check.actualStatus), passed: boolean(check.passed),
-        })),
+        host: host.host, counts: counts(host.counts), checks: projectChecks(host.checks),
       })),
+    },
+    hostRoutingBeforeB1Cutover: {
+      checkedAtShanghai: timestamp(hostMatrix.checkedAtShanghai), tlsVerificationEnabled: boolean(hostMatrix.tlsVerificationEnabled), businessWrites: boolean(hostMatrix.businessWrites), path: '/health',
+      cases: (Array.isArray(hostMatrix.cases) ? hostMatrix.cases : []).filter((row: ObjectRow) => ['x.b0.01xr.com', 'x.b1.01xr.com'].includes(row.host) && ['b0', 'b1'].includes(row.server)).map((row: ObjectRow) => ({ host: row.host, server: row.server, status: state(row.status), gitCommit: identifier(row.gitCommit) })),
+      scope: '历史矩阵早于 b1 业务切换，交叉 x.b* Host 当时返回 Yii；后续已查明前端实际使用 x2 上游，不能以此矩阵否定当前活动架构。',
     },
     configurationOutputIncident: {
       environmentValuesAccidentallyPrintedToToolOutput: boolean(b0.uiSnapshotIncident?.environmentValuesAccidentallyPrintedToToolOutput),
@@ -133,7 +178,7 @@ function onlineAcceptance(): ObjectRow {
       sensitiveValuesIncludedInThisProjection: false,
     },
     earlierD829Candidate: { commit: identifier(deployed.commit), digest: digest(deployed.digest), ciVerify: state(deployed.verify), ciPublish: state(deployed.publish), tests: count(deployed.localMySqlTests), createdAtShanghai: timestamp(deployed.createdAtShanghai) },
-    legacyMain: { host: legacyMain.mainHost === 'x.4mr.cn' ? 'x.4mr.cn' : null, deployedRevision: identifier(legacyMain.deployedRevision), sameContract: boolean(legacyMain.sameContract), transparentCutoverReady: boolean(legacyMain.transparentCutoverReady), compared: count(legacyComparison?.compared), compatible: count(legacyComparison?.compatible), incompatible: count(legacyComparison?.incompatible), scope: '旧版仅 2/12 一致；支付缺少 file_id、JWT 身份域及 schema 等存在跨版本差异，不能称为透明替换。' },
+    legacyMain: { host: legacyMain.mainHost === 'x.4mr.cn' ? 'x.4mr.cn' : null, deployedRevision: identifier(legacyMain.deployedRevision), sameContract: boolean(legacyMain.sameContract), transparentCutoverReady: boolean(legacyMain.transparentCutoverReady), compared: count(legacyComparison?.compared), compatible: count(legacyComparison?.compatible), incompatible: count(legacyComparison?.incompatible), userConfirmedRetired: retired.confirmedByUser === true && retired.legacyApiRetired === true, activeReplacementGate: !(retired.confirmedByUser === true && retired.legacyApiRetired === true), scope: '旧版 2/12 仅留历史参考；用户确认旧二维码与 x.4mr.cn 已停用，不属于当前 f → b0/b1 替换门槛，不宣称透明旧协议兼容。本轮未改旧基础设施。' },
     earlierD829DeploymentScope: { nodeContainerOnly: deployment.deployment?.target === 'wechat2 business container only', stackRedeploy: boolean(deployment.deployment?.stackRedeploy), databaseMigrations: boolean(deployment.deployment?.databaseMigrations), yiiChanges: boolean(deployment.deployment?.yiiChanges), b1NodeChanged: boolean(deployment.deployment?.b1NodeChanged) },
     earlierD829Parity: { runId: runId(parity.runId), applicationCommit: identifier(parity.applicationCommit), completed: boolean(parity.completed), passed: count(parity.passed), total: count(parity.total), restored: boolean(parity.restored), sqlRowsRemoved: count(parity.cleanup?.sqlRowsRemoved), redisHashesRemoved: count(parity.cleanup?.redisHashesRemoved), sqlVerified: boolean(parity.cleanup?.sqlVerified), redisVerified: boolean(parity.cleanup?.redisVerified) },
     earlierD829ProviderProbe: { runId: runId(provider.runId), completed: boolean(provider.completed), passed: count(provider.passed), total: count(provider.total), cosWritesStarted: boolean(provider.cosWritesStarted), paymentConfiguration: Object.fromEntries(paymentChecks.map(key => [key, boolean(provider.paymentConfiguration?.[key])])), scope: '实际短效 STS 签发和缺失对象 HEAD；不含支付、退款、对象写入或硬件。' },
@@ -246,10 +291,10 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
   return {
     generatedAt: new Date().toISOString(), conclusion: unexplained.length || errors.length || !node.success
       ? `当前本地复核仍有 ${unexplained.length} 组未解释差异、${errors.length} 项缺失证据或测试未通过，逻辑等价复核尚未完成；尚不能确认本轮代码可替换。`
-      : `本轮对新版 b0 Yii 的本地回归与严格对照已完成，保留 ${diagnosticAdaptations.length} 组诊断凭据脱敏差异及下列边界。b0 仅 x.b0.01xr.com 已按授权切到 Node 4bcd38b；b1 仅更新候选入口，业务仍为 Yii。两处只读检查 22/22 通过。旧主域名仅 2/12 一致，不能透明替换；真实微信、支付、COS 和硬件联调按用户决定延期。`, database: 'MySQL 8.4.9',
-    phase: '逻辑检查完成后，已执行获准的 b0 单 Host 切换与 b1 候选更新；真实外部联调继续延期。',
-    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用独立 MySQL/Redis 容器与数据库；其执行不访问线上。当前部署只读检查及较早 d829 业务验收分别列示，不合并为本地测试或新候选业务联调。' },
-    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；现代逻辑检查后补充了旧主线独立对照。wechat HEAD 是生成报告时的提交，部署应用仍为 4bcd38b。b0 只切单一获准 Host，b1 只更新候选；原 Yii、b1 业务入口、旧主域名及其他域名保留。' },
+      : `用户确认的当前活动范围 f → b0/b1 已可由 Node 替换，实际前端通过两个 x2 上游使用同一 4bcd38b 应用。共享状态身份和自有票据跨节点读取、取消及清理已验证。本地严格对照 883/884 保留 ${diagnosticAdaptations.length} 组 Bearer 脱敏差异及已知边界；旧二维码和 x.4mr.cn 已停用，2/12 旧版对照只留参考。真实微信、支付、COS 和硬件联调继续延期，不宣称全部外部流程已测。`, database: 'MySQL 8.4.9',
+    phase: '当前活动架构 f → b0/b1 已确认并使用 Node；旧入口退役已由用户明确，外部联调按既定范围延期。',
+    environment: { mysqlVersion: '8.4.9', mysqlSessionTimeZone: 'SYSTEM', mysqlSystemTimeZone: 'UTC', connectionCharset: 'utf8', phpDebug: true, yiiEnvironment: 'prod', y1Fixture: 'loopback HTTPS 127.0.0.1:19999', certificateTrust: 'PHP 临时测试 router 为同类型 AdminGameCatalog / AdminSceneFetcher 注入仅允许 loopback 的传输并附 CA；Node 使用 NODE_EXTRA_CA_CERTS。仅测试进程配置，未修改 game 源码。', excludedRuns: 'DEBUG 关闭等环境探索不纳入主表；仅使用本轮 MySQL 证据。', lifecycle: '本地套件仅绑定 loopback，使用隔离 MySQL/Redis，不访问线上。线上只读检查、自有单行票据验证及较早 d829 验收各自列示，不合并为全部业务或供应商联调。' },
+    source: { gameHead: head('../game'), wechatHead: head('.'), gameBusinessChanges: currentBusinessSourceChanges('../game', 'api'), nodeBusinessChanges: currentBusinessSourceChanges('.', 'src'), note: 'game 保持未修改的 Yii 对照；wechat HEAD 是报告生成时提交，部署应用仍为 4bcd38b，未改应用源码。实际前端 f 使用两台 Node 的 x2 上游，原 Yii 保留回滚；本轮未修改前端或旧基础设施。' },
     baseline: baseline?.comparison ?? { total: 797, matched: 676, differences: 121, note: '初始比较归档在 baseline-20261112；修复期间新增边界用例，两轮分母不同。' },
     remote: remote ?? { unavailable: true },
     candidate: candidate ?? { unavailable: true },
@@ -278,9 +323,15 @@ function buildSummary(evidence: Record<string, any>, cases: ComparisonCase[], er
       'Y1 场景使用本地 HTTPS 替身；并非真实 Y1 部署或网络验收。场景套件结果始终取最后一次已生成 JSON，不沿用早期证书信任配置错误。',
       '按用户要求，以现有 Yii 为兼容合同，不新增业务规则。旧入口的公开错误和保存副作用亦参与对照；诊断内容中的凭据保持脱敏，涉及扩大云存储权限的差异须单独评估。',
       '生成时钟、随机凭据、等义 Link token 引号及私有 PHP 文件路径/堆栈只按脚本中显式规则归一化；错误状态、公开消息与类型、业务余额、SQL/Redis 副作用和字段缺失继续作为证据。',
-      'b0 仅 x.b0.01xr.com 已切到 4bcd38b，设备免签策略经用户明确批准，原 Yii 保留回滚；最初多 Host 草案被自动审批拒绝，在应用前已收窄。b1 候选 x2.b1.01xr.com 使用相同镜像，业务 x.b1.01xr.com 仍是 Yii 64901c9，设备严格校验策略保持。两处各 11/11、合计 22/22 只读检查通过。未迁移、未整栈重部署、未重启辅助任务或进行业务写入，其他域名未变。',
-      'b1 按自己的 Yii 核对 24/24 项业务环境映射、6/6 密钥文件字节和可读性，并修正本环境扫码 origin，没有照搬 b0。UI 快照曾意外把 ENV 值显示到工具输出，已告知用户；后续只输出名称、数量和布尔结论，实际值及密钥指纹没有写入仓库或报告。本投影不嵌入 ENV 值或密钥指纹。',
-      '较早 d829 专属 fixture 24/24，10 条 SQL 行与 6 个 Redis hash 已清理并复核；这些是历史业务证据，不能继承为新候选真实业务联调。旧主域名 c4e088a 的独立对照仅 2/12 一致，不属于本轮现代 883/884 分母，不能宣称透明替换。',
+      '实际 f 前端的管理 API 按 50%/50% 分到两个 x2 上游并互为 backup；小程序网关以同两台为主/备，公共 Host/SNI 为 x2.b0.01xr.com，TLS 验证开启。两个域名的不同服务器及固定代理路径已核实；每台 Node 未来部署均需保留两个 x2 别名。撤回此前“未使用 Node”的假设，不推断历史流量。',
+      'b1 当前容器 2ff62e 于上海时间 11 月 12 日 23:57:58 创建，应用仍为 4bcd38b。此前复制其 Yii 的废弃 checkin.voxel.cn origin 是配置错误，已告知用户并恢复 Node 原有 c.4mr.cn；当前与 Yii 为 23/24，唯一差异是获明确要求的退役 origin 例外。',
+      '两台实际 Node 的 MySQL 实例/数据库及票据表、业务/管理 Redis 实例与 DB、六个密钥文件及管理 issuer 已核实一致，只记录布尔结论，不输出私有身份指纹。原 Yii 保留回滚，未执行 DDL、迁移、完整 Stack 重部署或辅助任务；最初被拒绝的多 Host 草案已在实际应用前收窄。',
+      '11 月 13 日自有票据验证仅直接插入 1 行 pending，经真实前端分别走 b0/b1 共 4 次状态 GET、在 b1 取消 1 次，两端均见 cancelled。精确自有行及 owner lock 已清理，临时代码和完成的私有 ledger 已移除；不涉及其他业务数据。首次 CLIENT INFO 预检在任何数据写入前失败，修正实际 DB/INFO server 绑定后的成功运行单独记录。',
+      '票据验证没有调用 HTTP 创建票据、全局清理、限流写入、批准、登录、消费、真实账号或供应商，不证明 QR 生成或真实微信批准。ledger 不能跨容器删除存活，Redis 重启也阻止自动恢复；本轮已完成清理。固定别名的目标由独立前端配置证据核实。',
+      '11 月 12 日 23:44:34 的 b1 业务入口只读 11/11，以及 23:23:55 的两入口 22/22，分别保留历史时间与范围；不合并成全部接口证明。切换前交叉 x.b* Host 矩阵不是当前实际 x2 前端路由，不能据此推断当前请求走向。',
+      '两端设备免签只延续原 Yii dev 的设备 refresh 鉴权分支，跳过 time/hash 和 token 格式检查，仍需 token 和唯一 uuid/id/key；JWT 及支付回调验签保持原规则。该设置不是由共用镜像自动继承。',
+      'UI 快照曾意外把 ENV 值显示到工具输出，已告知用户；后续只输出名称、数量和布尔结论，实际值及密钥指纹没有写入仓库或报告。本投影不嵌入 ENV 值或密钥指纹。',
+      '用户确认旧二维码、缺省/显式 v0、x.4mr.cn 和 checkin.voxel.cn 已停用，当前统一使用 c.4mr.cn。旧主线 2/12 只留历史参考，不是当前替换门槛，也不宣称旧协议透明兼容。较早 d829 fixture 24/24 及清理记录同样不继承为新候选真实业务联调。',
       '保留的实现边界包括诊断Bearer脱敏、Y1旧forward关闭TLS校验而Node继续验证、部分设备建档等错误分支的更强事务回滚，以及扫码限流Yii FileCache与Node SQL存储不共享。它们不被改写成严格零差异。',
       '业务ID/scene_id按现有INT32数据库域验证。PHP64整数超出JavaScript安全整数范围时，原始数值及JSON输出精度仍有边界；不能据本报告声称任意PHP64输入逐字节等价。',
       '诊断脱敏的已知差异保持在主表中，因此严格差分命令仍可为 exit 1；部署应用仍为 4bcd38b。补充验证提交 1bf66a3 的 CI 43244233055 verify 成功、publish 按条件跳过。本报告只离线汇总证据，不执行切换或外部联调。',
