@@ -36,6 +36,8 @@ npm run migrate -- --bootstrap
 
 `--bootstrap` 只接受空库，不包含 DROP TABLE。普通迁移创建兼容状态/扫码限流表和缺失扫码表，检查设备版本字段及 v1 商户关联列，并将 `record.device_id` 改为允许空值和 `ON DELETE SET NULL`；保留业务行。旧 Node Session 表保留，认证不再使用。迁移不会随应用启动自动运行。
 
+设备类型存储在 `device.device_type`（`VARCHAR(32) NOT NULL DEFAULT 'ios'`）。执行迁移会给已有设备补上 `ios`，新设备未指定类型时也默认使用 `ios`；重复迁移保留已设置的类型。空库初始化和已有数据库升级均通过上述迁移入口完成。v2 设备接口使用 `device_type` 读写，接受非空且不超过 32 个字符的类型值（例如 `ios`、`rokid`）；Web 管理设备接口返回 `deviceType`。
+
 冻结源的 v2 历史迁移删除了 `device.shop_id`，但 v1 游戏仍依赖它。`database/002-v1-compatibility.sql` 恢复可空关联列和外键。已经丢失的设备与商户映射需要从可信备份核对恢复，代码不能推断历史归属。初始化 SQL 来自 65 个源迁移的最终状态；生成器只用于离线核对，服务运行不依赖 PHP。
 
 当前管理员设备删除入口为 `DELETE /admin-api/devices/:id`，仅密码管理员可用。存在未结束的游戏时返回 409；删除配置和关联时保留已结束游戏记录及原时间字段。必须先完成记录保留迁移，旧未升级的表结构会拒绝删除。已有外键通过单条 ALTER 原子更新；重复迁移不修改业务数据。

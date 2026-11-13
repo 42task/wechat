@@ -7,7 +7,7 @@ import { paginationOrigin } from '../core/pagination';
 
 type Resource = 'device' | 'setup' | 'file';
 const columns: Record<Resource, string[]> = {
-  device: ['id', 'version', 'uuid', 'tag', 'created_at', 'updated_at', 'ip', 'shop_id'],
+  device: ['id', 'version', 'uuid', 'tag', 'created_at', 'updated_at', 'ip', 'shop_id', 'device_type'],
   setup: ['id', 'money', 'slogans', 'pictures', 'thumbs', 'title', 'scene_id', 'device_id', 'shots', 'updated_at'],
   file: ['id', 'unionid', 'key', 'type', 'md5', 'size', 'bucket', 'created_at', 'unlocked', 'title', 'user_id', 'price'],
 };
@@ -143,6 +143,10 @@ export async function validate(s: Services, resource: Resource, body: Row, curre
   const hasError = (field: string) => errors.some(error => error.field === field);
   const error = (field: string, message: string) => { if (!hasError(field)) errors.push({ field, message }); };
   const label = (field: string): string => ({scene_id:'Scene ID',device_id:'Device ID',user_id:'User ID'}[field] ?? field.charAt(0).toUpperCase()+field.slice(1));
+  if (resource === 'device' && Object.hasOwn(data, 'device_type')) {
+    const type = data.device_type;
+    if (typeof type !== 'string' || !type.trim() || [...type].length > 32) error('device_type', 'Device type must be a non-empty string of at most 32 characters.');
+  }
   if (resource === 'file') {
     const key = Object.hasOwn(data, 'key') ? data.key : current?.key;
     if (key === undefined || key === null || typeof key === 'string' && !key.trim() || Array.isArray(key) && key.length === 0) error('key', 'Key cannot be blank.');
@@ -194,6 +198,7 @@ export async function saveResource(s: Services, resource: Resource, data: Row, c
     if (resource !== 'file') delete persisted.updated_at;
     const saved=current ? await s.db.update(resource, current.id, persisted) : await s.db.insert(resource, persisted);
     const response:Row=copyPhpMetadata(assigned,copyPhpMetadata(current ?? {},{...current,...assigned,id:saved.id}));
+    if (resource === 'device' && Object.hasOwn(saved, 'device_type')) response.device_type = saved.device_type;
     if (resource !== 'file') response.updated_at=yiiObject('Expression',{expression:'NOW()',params:[]});
     return markJsonDecoded(response);
   }

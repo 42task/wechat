@@ -80,6 +80,21 @@ describe.skipIf(process.env.RUN_INTEGRATION !== '1')('real HTTP + MySQL-compatib
     agent.set('Authorization', `Bearer ${result.body.token.accessToken}`);
     return { agent, owner, tokens: result.body.token };
   }
+  it('reads the default device type, persists rokid and keeps it when editing other fields', async () => {
+    const authorization = `Bearer ${token}`;
+    expect((await request.get('/v2/devices/1').set('Authorization', authorization).expect(200)).body.device_type).toBe('ios');
+    const changed = await request.patch('/v2/devices/1').set('Authorization', authorization).send({ device_type: 'rokid' }).expect(200);
+    expect(changed.body.device_type).toBe('rokid');
+    const renamed = await request.patch('/v2/devices/1').set('Authorization', authorization).send({ tag: 'renamed-rokid' }).expect(200);
+    expect(renamed.body.device_type).toBe('rokid');
+    expect((await request.get('/v2/devices/1').set('Authorization', authorization).expect(200)).body.device_type).toBe('rokid');
+    await request.patch('/v2/devices/1').set('Authorization', authorization).send({ device_type: null }).expect(422);
+    expect(await s.db.one('SELECT device_type FROM device WHERE id=1')).toEqual({ device_type: 'rokid' });
+    const { agent } = await login();
+    const devices = await agent.get('/admin-api/devices').expect(200);
+    expect(devices.body.find((device: any) => device.id === 1)).toMatchObject({ deviceType: 'rokid' });
+    expect(devices.body.find((device: any) => device.id === 2)).toMatchObject({ deviceType: 'ios' });
+  });
   it('serves real health and HEAD, OpenAPI, pagination headers and correct missing routes', async () => {
     const health = await request.get('/health').expect(200);
     expect(health.body).toMatchObject({ status: 'healthy', checks: { database: { status: 'up' }, redis: { status: 'up' } } });

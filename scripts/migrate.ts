@@ -23,6 +23,7 @@ async function main(): Promise<void> {
     const columns = await db.columns('device');
     if (!columns.some(col => col.name === 'version')) await db.execute('ALTER TABLE device ADD COLUMN version int NOT NULL DEFAULT 0');
     if (!columns.some(col => col.name === 'shop_id')) for (const sql of await statements('database/002-v1-compatibility.sql')) await db.execute(sql);
+    if (!columns.some(col => col.name === 'device_type')) for (const sql of await statements('database/006-device-type.sql')) await db.execute(sql);
     await preserveRecordHistory(db);
     await ensureFileDownloadPrice(db);
     console.log('Backend schema is ready. Existing business rows were preserved.');
